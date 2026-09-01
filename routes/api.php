@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\DirectorEquityController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\TaskController;
+use App\Http\Controllers\Api\TeacherController;
 
 // Public Auth Routes (Rate Limited for Enterprise Security & Brute-force Protection)
 Route::get('/login', fn() => response()->json(['message' => 'Unauthenticated.'], 401))->name('login');
@@ -109,4 +110,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/tasks/{id}/status', [TaskController::class, 'updateStatus']);
     Route::delete('/tasks/{id}', [TaskController::class, 'destroy']);
     Route::post('/tasks/{id}/comments', [TaskController::class, 'addComment']);
+
+    // Faculty & Teacher Management (Principal & Teacher Self-Service)
+    Route::get('/teachers', [TeacherController::class, 'index']);
+    Route::post('/teachers', [TeacherController::class, 'store']);
+    Route::get('/teachers/{id}', [TeacherController::class, 'show']);
+    Route::post('/teachers/{id}', [TeacherController::class, 'update']);
+    Route::post('/teachers/{id}/status', [TeacherController::class, 'updateStatus']);
+    Route::post('/teachers/{id}/toggle-status', [TeacherController::class, 'toggleStatus']);
+    Route::delete('/teachers/{id}', [TeacherController::class, 'destroy']);
+    Route::get('/teacher/me', [TeacherController::class, 'getProfile']);
+    Route::post('/teacher/me', [TeacherController::class, 'updateProfile']);
 });
+
