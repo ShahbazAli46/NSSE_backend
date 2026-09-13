@@ -17,6 +17,7 @@ class Director extends Model
     {
         return [
             'share_percentage' => 'decimal:2',
+            'expected_monthly_contribution' => 'decimal:2',
         ];
     }
 
@@ -37,14 +38,14 @@ class Director extends Model
 
     /**
      * Compute current net running available capital balance for this director.
+     * Capital additions include direct cash injections and expenses paid by the director out-of-pocket.
      */
     public function getLiveBalanceAttribute(): float
     {
-        $injected = (float) $this->transactions()->where('type', 'capital_injection')->sum('amount');
+        $capitalInjected = (float) $this->transactions()->whereIn('type', ['capital_injection', 'capital_expense'])->sum('amount');
         $profit = (float) $this->transactions()->where('type', 'profit_credit')->sum('amount');
-        $consumed = (float) $this->transactions()->where('type', 'capital_expense')->sum('amount');
         $withdrawn = (float) $this->transactions()->where('type', 'withdrawal')->sum('amount');
         
-        return max(0, ($injected + $profit) - ($consumed + $withdrawn));
+        return max(0, ($capitalInjected + $profit) - $withdrawn);
     }
 }

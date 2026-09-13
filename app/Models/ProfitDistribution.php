@@ -17,6 +17,7 @@ class ProfitDistribution extends Model
     {
         return [
             'total_profit_pool' => 'decimal:2',
+            'distribution_breakdown' => 'array',
         ];
     }
 

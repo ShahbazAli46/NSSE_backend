@@ -15,7 +15,7 @@ class GrantController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Grant::with('creator:id,name,role')->latest('deposit_date');
+        $query = Grant::with('creator:id,name,role')->orderBy('deposit_date', 'asc')->orderBy('created_at', 'asc');
 
         if ($request->filled('month')) {
             $month = $request->month;

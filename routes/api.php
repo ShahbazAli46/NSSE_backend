@@ -13,6 +13,11 @@ use App\Http\Controllers\Api\DirectorEquityController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\TaskController;
 use App\Http\Controllers\Api\TeacherController;
+use App\Http\Controllers\Api\StaffMemberController;
+use App\Http\Controllers\Api\StaffAttendanceController;
+use App\Http\Controllers\Api\PayrollController;
+use App\Http\Controllers\Api\AdvanceSalaryController;
+use App\Http\Controllers\Api\LeaveRequestController;
 
 // Public Auth Routes (Rate Limited for Enterprise Security & Brute-force Protection)
 Route::get('/login', fn() => response()->json(['message' => 'Unauthenticated.'], 401))->name('login');
@@ -43,6 +48,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Live 3-Way Financial Summary, Digital Bank Statement & Cash Drawer Statement
     Route::get('/financial-summary', [BankStatementController::class, 'financialSummary']);
+    Route::get('/bank-statement/summary', [BankStatementController::class, 'financialSummary']);
     Route::get('/bank/statement/export-pdf', [BankStatementController::class, 'exportPdf']);
     Route::get('/bank/statement', [BankStatementController::class, 'statement']);
     Route::get('/cash-drawer/statement', [BankStatementController::class, 'cashDrawerStatement']);
@@ -80,6 +86,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('role:chairman,director,super_admin,admin')->group(function () {
         Route::get('/directors', [DirectorEquityController::class, 'index']);
         Route::get('/directors/pnl-report', [DirectorEquityController::class, 'pnlReport']);
+        Route::get('/directors/expenses-report', [DirectorEquityController::class, 'directorExpensesReport']);
+        Route::get('/directors/expenses-report/export-pdf', [DirectorEquityController::class, 'exportDirectorExpensesPdf']);
         Route::post('/directors', [DirectorEquityController::class, 'storeDirector']);
         Route::put('/directors/{id}', [DirectorEquityController::class, 'updateDirector']);
         Route::get('/directors/{id}/statement', [DirectorEquityController::class, 'statement']);
@@ -111,7 +119,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/tasks/{id}', [TaskController::class, 'destroy']);
     Route::post('/tasks/{id}/comments', [TaskController::class, 'addComment']);
 
-    // Faculty & Teacher Management (Principal & Teacher Self-Service)
+    // Faculty & Teacher Management (Principal, HR, Admin)
     Route::get('/teachers', [TeacherController::class, 'index']);
     Route::post('/teachers', [TeacherController::class, 'store']);
     Route::get('/teachers/{id}', [TeacherController::class, 'show']);
@@ -121,5 +129,46 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/teachers/{id}', [TeacherController::class, 'destroy']);
     Route::get('/teacher/me', [TeacherController::class, 'getProfile']);
     Route::post('/teacher/me', [TeacherController::class, 'updateProfile']);
+
+    // Non-Teaching Staff Management (HR, Principal, Admin)
+    Route::get('/staff-members', [StaffMemberController::class, 'index']);
+    Route::post('/staff-members', [StaffMemberController::class, 'store']);
+    Route::get('/staff-members/{id}', [StaffMemberController::class, 'show']);
+    Route::post('/staff-members/{id}', [StaffMemberController::class, 'update']);
+    Route::post('/staff-members/{id}/status', [StaffMemberController::class, 'updateStatus']);
+    Route::delete('/staff-members/{id}', [StaffMemberController::class, 'destroy']);
+
+    // Staff Attendance Desk (HR, Principal, Admin)
+    Route::get('/attendance/daily', [StaffAttendanceController::class, 'getDaily']);
+    Route::post('/attendance/mark', [StaffAttendanceController::class, 'mark']);
+    Route::post('/attendance/mark-all-present', [StaffAttendanceController::class, 'markAllPresent']);
+    Route::get('/attendance/summary', [StaffAttendanceController::class, 'getMonthlySummary']);
+
+    // Staff Payroll & Payslips (HR, Principal, Accountant, Admin)
+    Route::get('/payroll', [PayrollController::class, 'index']);
+    Route::get('/payroll/reports/bonuses', [PayrollController::class, 'bonusReport']);
+    Route::post('/payroll/mark-all-paid', [PayrollController::class, 'markAllPaid']);
+    Route::post('/payroll/batch-pay', [PayrollController::class, 'markAllPaid']);
+    Route::post('/payroll/{id}/mark-paid', [PayrollController::class, 'markPaid']);
+    Route::post('/payroll/{id}/pay', [PayrollController::class, 'markPaid']);
+    Route::put('/payroll/{id}', [PayrollController::class, 'update']);
+    Route::get('/payroll/{id}', [PayrollController::class, 'show']);
+    Route::get('/teachers/{id}/ledger', [PayrollController::class, 'teacherLedger']);
+    Route::get('/teacher/my-ledger', [PayrollController::class, 'myLedger']);
+
+    // Advance Salary Requests & Executive Approvals (Teacher, Principal, Directors)
+    Route::get('/advance-salary-requests', [AdvanceSalaryController::class, 'index']);
+    Route::post('/advance-salary-requests', [AdvanceSalaryController::class, 'store']);
+    Route::get('/advance-salary-requests/my', [AdvanceSalaryController::class, 'myRequests']);
+    Route::post('/advance-salary-requests/{id}/approve', [AdvanceSalaryController::class, 'approve']);
+    Route::post('/advance-salary-requests/{id}/reject', [AdvanceSalaryController::class, 'reject']);
+    Route::post('/advance-salary-requests/{id}/disburse', [AdvanceSalaryController::class, 'disburse']);
+
+    // Staff Leave Applications & Principal Approvals (Teacher, Staff, Principal, HR)
+    Route::get('/leave-requests', [LeaveRequestController::class, 'index']);
+    Route::post('/leave-requests', [LeaveRequestController::class, 'store']);
+    Route::get('/leave-requests/my', [LeaveRequestController::class, 'myLeaves']);
+    Route::post('/leave-requests/{id}/approve', [LeaveRequestController::class, 'approve']);
+    Route::post('/leave-requests/{id}/reject', [LeaveRequestController::class, 'reject']);
 });
 

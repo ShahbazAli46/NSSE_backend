@@ -55,9 +55,15 @@ class BankStatementController extends Controller
             ->whereBetween('created_at', [$startOfMonthTime, $endOfMonthTime])
             ->sum('amount');
 
-        // 5. Month-Specific Cash Expenses
+        // 5. Month-Specific Cash & Direct Bank Expenses
         $monthCashExpenses = (float) Expense::where('expense_type', 'general')
             ->where('payment_method', 'Cash')
+            ->whereBetween('created_at', [$startOfMonthTime, $endOfMonthTime])
+            ->sum('amount');
+
+        $monthDirectBankExpenses = (float) Expense::where('expense_type', 'general')
+            ->whereNull('cheque_id')
+            ->whereIn('payment_method', ['Bank Transfer', 'Online Transfer', 'Bank'])
             ->whereBetween('created_at', [$startOfMonthTime, $endOfMonthTime])
             ->sum('amount');
 
@@ -65,7 +71,11 @@ class BankStatementController extends Controller
         $totalGrantsAllTime = (float) Grant::sum('amount');
         $totalCashedChequesAllTime = (float) Cheque::where('status', 'cashed')->sum('amount');
         $totalPendingChequesAllTime = (float) Cheque::where('status', 'issued')->sum('amount');
-        $bankBalance = max(0, $totalGrantsAllTime - $totalCashedChequesAllTime);
+        $totalDirectBankExpensesAllTime = (float) Expense::where('expense_type', 'general')
+            ->whereNull('cheque_id')
+            ->whereIn('payment_method', ['Bank Transfer', 'Online Transfer', 'Bank'])
+            ->sum('amount');
+        $bankBalance = max(0, $totalGrantsAllTime - $totalCashedChequesAllTime - $totalDirectBankExpensesAllTime);
 
         $totalPettyCashChequesAllTime = (float) Cheque::where('status', 'cashed')
             ->where('purpose', 'petty_cash')
@@ -88,7 +98,8 @@ class BankStatementController extends Controller
             'month_petty_cash_inflow' => $monthPettyCashInflow,
             'month_expenses' => $monthExpenses,
             'month_cash_expenses' => $monthCashExpenses,
-            'month_bank_net' => $monthGrants - $monthCashedCheques,
+            'month_direct_bank_expenses' => $monthDirectBankExpenses,
+            'month_bank_net' => $monthGrants - $monthCashedCheques - $monthDirectBankExpenses,
             'month_cash_net' => $monthPettyCashInflow - $monthCashExpenses,
 
             // All-Time / Running Balances
@@ -102,7 +113,7 @@ class BankStatementController extends Controller
     }
 
     /**
-     * Chronological Passbook / Bank Statement Combining Grants (Credit) & Cashed Cheques (Debit).
+     * Chronological Passbook / Bank Statement Combining Grants (Credit), Cashed Cheques & Direct Bank Transfers (Debit).
      */
     public function statement(Request $request)
     {
@@ -110,22 +121,33 @@ class BankStatementController extends Controller
 
         $grantsQuery = Grant::query();
         $chequesQuery = Cheque::where('status', 'cashed');
+        $directBankExpensesQuery = Expense::where('expense_type', 'general')
+            ->whereNull('cheque_id')
+            ->whereIn('payment_method', ['Bank Transfer', 'Online Transfer', 'Bank']);
 
         $openingBalance = 0.0;
         if ($month) {
             $parsedDate = Carbon::parse($month . '-01');
             $startOfMonth = $parsedDate->copy()->startOfMonth()->toDateString();
             $endOfMonth = $parsedDate->copy()->endOfMonth()->toDateString();
+            $startOfMonthTime = $parsedDate->copy()->startOfMonth()->toDateTimeString();
+            $endOfMonthTime = $parsedDate->copy()->endOfMonth()->toDateTimeString();
 
             // Opening bank balance prior to this month
             $priorGrants = (float) Grant::where('deposit_date', '<', $startOfMonth)->sum('amount');
             $priorCashedCheques = (float) Cheque::where('status', 'cashed')
                 ->where('cashed_date', '<', $startOfMonth)
                 ->sum('amount');
-            $openingBalance = max(0, $priorGrants - $priorCashedCheques);
+            $priorDirectBankExpenses = (float) Expense::where('expense_type', 'general')
+                ->whereNull('cheque_id')
+                ->whereIn('payment_method', ['Bank Transfer', 'Online Transfer', 'Bank'])
+                ->where('created_at', '<', $startOfMonthTime)
+                ->sum('amount');
+            $openingBalance = max(0, $priorGrants - $priorCashedCheques - $priorDirectBankExpenses);
 
             $grantsQuery->whereBetween('deposit_date', [$startOfMonth, $endOfMonth]);
             $chequesQuery->whereBetween('cashed_date', [$startOfMonth, $endOfMonth]);
+            $directBankExpensesQuery->whereBetween('created_at', [$startOfMonthTime, $endOfMonthTime]);
         }
 
         // Fetch grants (Credit)
@@ -168,7 +190,33 @@ class BankStatementController extends Controller
             ];
         });
 
-        $merged = $grants->concat($cheques)->sortBy('raw_date')->values();
+        // Fetch direct bank transfers / salary disbursements (Debit)
+        $directBankExpenses = $directBankExpensesQuery->get()->map(function ($e) {
+            $isSalary = str_contains(strtolower($e->category), 'salar') || str_contains(strtolower($e->title), 'salary') || str_contains(strtolower($e->voucher_no ?? ''), 'vch-sal');
+            $isAdvance = str_contains(strtolower($e->category), 'advance') || str_contains(strtolower($e->voucher_no ?? ''), 'vch-adv');
+            
+            $categoryName = $isSalary ? 'Staff Salary (Bank Transfer)' : ($isAdvance ? 'Advance Salary (Bank Transfer)' : 'Bank Transfer Expense');
+
+            return [
+                'id' => 'expense_' . $e->id,
+                'type' => 'debit',
+                'category' => $categoryName,
+                'title' => $e->title,
+                'reference' => $e->voucher_no ?: ($e->payment_reference ?: 'Direct Transfer'),
+                'date' => $e->created_at->format('Y-m-d'),
+                'raw_date' => $e->created_at->format('Y-m-d H:i:s'),
+                'credit' => 0.0,
+                'debit' => (float) $e->amount,
+                'slip_url' => $e->receipt_url,
+                'notes' => $e->description,
+                'amount_tier' => 3,
+                'tier_color' => 'blue',
+                'is_petty_cash' => false,
+                'payment_method' => $e->payment_method,
+            ];
+        });
+
+        $merged = $grants->concat($cheques)->concat($directBankExpenses)->sortBy('raw_date')->values();
 
         $runningBalance = $openingBalance;
         $statement = [];
@@ -202,14 +250,12 @@ class BankStatementController extends Controller
             $statement[] = $item;
         }
 
-        $statement = array_reverse($statement);
-
         return response()->json([
             'data' => $statement,
             'opening_balance' => $openingBalance,
             'current_bank_balance' => max(0, $runningBalance),
             'total_credits' => (float) $grants->sum('credit'),
-            'total_debits' => (float) $cheques->sum('debit'),
+            'total_debits' => (float) $cheques->sum('debit') + (float) $directBankExpenses->sum('debit'),
         ]);
     }
 
@@ -222,22 +268,33 @@ class BankStatementController extends Controller
 
         $grantsQuery = Grant::query();
         $chequesQuery = Cheque::where('status', 'cashed');
+        $directBankExpensesQuery = Expense::where('expense_type', 'general')
+            ->whereNull('cheque_id')
+            ->whereIn('payment_method', ['Bank Transfer', 'Online Transfer', 'Bank']);
 
         $openingBalance = 0.0;
         if ($month) {
             $parsedDate = Carbon::parse($month . '-01');
             $startOfMonth = $parsedDate->copy()->startOfMonth()->toDateString();
             $endOfMonth = $parsedDate->copy()->endOfMonth()->toDateString();
+            $startOfMonthTime = $parsedDate->copy()->startOfMonth()->toDateTimeString();
+            $endOfMonthTime = $parsedDate->copy()->endOfMonth()->toDateTimeString();
 
             // Opening bank balance prior to this month
             $priorGrants = (float) Grant::where('deposit_date', '<', $startOfMonth)->sum('amount');
             $priorCashedCheques = (float) Cheque::where('status', 'cashed')
                 ->where('cashed_date', '<', $startOfMonth)
                 ->sum('amount');
-            $openingBalance = max(0, $priorGrants - $priorCashedCheques);
+            $priorDirectBankExpenses = (float) Expense::where('expense_type', 'general')
+                ->whereNull('cheque_id')
+                ->whereIn('payment_method', ['Bank Transfer', 'Online Transfer', 'Bank'])
+                ->where('created_at', '<', $startOfMonthTime)
+                ->sum('amount');
+            $openingBalance = max(0, $priorGrants - $priorCashedCheques - $priorDirectBankExpenses);
 
             $grantsQuery->whereBetween('deposit_date', [$startOfMonth, $endOfMonth]);
             $chequesQuery->whereBetween('cashed_date', [$startOfMonth, $endOfMonth]);
+            $directBankExpensesQuery->whereBetween('created_at', [$startOfMonthTime, $endOfMonthTime]);
         }
 
         // Fetch grants (Credit)
@@ -273,7 +330,28 @@ class BankStatementController extends Controller
             ];
         });
 
-        $merged = $grants->concat($cheques)->sortBy('raw_date')->values();
+        // Fetch direct bank transfers / salary disbursements (Debit)
+        $directBankExpenses = $directBankExpensesQuery->get()->map(function ($e) {
+            $isSalary = str_contains(strtolower($e->category), 'salar') || str_contains(strtolower($e->title), 'salary') || str_contains(strtolower($e->voucher_no ?? ''), 'vch-sal');
+            $isAdvance = str_contains(strtolower($e->category), 'advance') || str_contains(strtolower($e->voucher_no ?? ''), 'vch-adv');
+            
+            $categoryName = $isSalary ? 'Staff Salary (Bank Transfer)' : ($isAdvance ? 'Advance Salary (Bank Transfer)' : 'Bank Transfer Expense');
+
+            return [
+                'id' => 'expense_' . $e->id,
+                'type' => 'debit',
+                'category' => $categoryName,
+                'title' => $e->title,
+                'reference' => $e->voucher_no ?: ($e->payment_reference ?: 'Direct Transfer'),
+                'date' => $e->created_at->format('Y-m-d'),
+                'raw_date' => $e->created_at->format('Y-m-d H:i:s'),
+                'credit' => 0.0,
+                'debit' => (float) $e->amount,
+                'notes' => $e->description,
+            ];
+        });
+
+        $merged = $grants->concat($cheques)->concat($directBankExpenses)->sortBy('raw_date')->values();
 
         $runningBalance = $openingBalance;
         $statement = [];
@@ -307,7 +385,7 @@ class BankStatementController extends Controller
         }
 
         $totalCredits = (float) $grants->sum('credit');
-        $totalDebits = (float) $cheques->sum('debit');
+        $totalDebits = (float) $cheques->sum('debit') + (float) $directBankExpenses->sum('debit');
         $closingBalance = max(0, $runningBalance);
 
         $docTitle = $month ? "OFFICIAL DIGITAL BANK PASSBOOK STATEMENT ({$month})" : "OFFICIAL DIGITAL BANK PASSBOOK STATEMENT";
@@ -446,8 +524,6 @@ class BankStatementController extends Controller
             $item['running_balance'] = max(0, $runningBalance);
             $statement[] = $item;
         }
-
-        $statement = array_reverse($statement);
 
         return response()->json([
             'data' => $statement,

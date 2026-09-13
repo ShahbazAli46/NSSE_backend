@@ -19,8 +19,13 @@ class ExpenseController extends Controller
     {
         $query = Expense::with([
             'creator:id,name,role',
+            'director:id,name,email',
             'cheque:id,cheque_no,beneficiary,amount',
-        ])->latest('created_at');
+        ])->orderBy('created_at', 'desc');
+
+        if ($request->filled('expense_type') && $request->expense_type !== 'all') {
+            $query->where('expense_type', $request->expense_type);
+        }
 
         if ($request->filled('tier')) {
             $query->where('amount_tier', (int) $request->tier);
@@ -191,6 +196,7 @@ class ExpenseController extends Controller
                 'tier_color' => $tierInfo['color'],
                 'description' => $request->description,
                 'receipt_url' => $receiptUrl,
+                'expense_type' => 'general',
                 'created_by' => $user->id,
                 'status' => 'disbursed', // Immediately active/posted
                 'disbursed_at' => now(),
@@ -235,6 +241,10 @@ class ExpenseController extends Controller
         $month = $request->get('month'); // optional month (YYYY-MM)
 
         $query = Expense::query();
+
+        if ($request->filled('expense_type') && $request->expense_type !== 'all') {
+            $query->where('expense_type', $request->expense_type);
+        }
 
         if ($month) {
             $start = \Illuminate\Support\Carbon::parse($month . '-01')->startOfMonth()->toDateTimeString();
@@ -323,7 +333,12 @@ class ExpenseController extends Controller
         $startOfMonth = now()->startOfMonth()->toDateTimeString();
         $endOfMonth = now()->endOfMonth()->toDateTimeString();
 
-        $stats = Expense::selectRaw("
+        $statsQuery = Expense::query();
+        if ($request->filled('expense_type') && $request->expense_type !== 'all') {
+            $statsQuery->where('expense_type', $request->expense_type);
+        }
+
+        $stats = $statsQuery->selectRaw("
             COUNT(*) as total_vouchers,
             COALESCE(SUM(amount), 0) as total_spent,
             COUNT(CASE WHEN amount_tier = 1 THEN 1 END) as tier_1_count,
@@ -384,6 +399,10 @@ class ExpenseController extends Controller
                   ->orWhere('voucher_no', 'like', "%{$search}%")
                   ->orWhere('description', 'like', "%{$search}%");
             });
+        }
+
+        if ($request->filled('expense_type') && $request->expense_type !== 'all') {
+            $query->where('expense_type', $request->expense_type);
         }
 
         $expenses = $query->get();

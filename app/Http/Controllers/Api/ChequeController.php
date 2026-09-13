@@ -16,7 +16,7 @@ class ChequeController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Cheque::with('creator:id,name,role')->latest('created_at');
+        $query = Cheque::with('creator:id,name,role')->orderBy('issue_date', 'asc')->orderBy('created_at', 'asc');
 
         if ($request->filled('status')) {
             $query->where('status', $request->status);

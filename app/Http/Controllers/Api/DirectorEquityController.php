@@ -50,21 +50,26 @@ class DirectorEquityController extends Controller
         $directorsData = [];
         $totalNetCapitalAll = 0.0;
         $totalCapitalInjectedAll = 0.0;
-        $totalConsumedAll = 0.0;
+        $totalExpensesPaidAll = 0.0;
+        $totalDirectInjectedAll = 0.0;
         $totalProfitAll = 0.0;
         $totalWithdrawnAll = 0.0;
 
         foreach ($rawDirectors as $director) {
-            $injected = (float) $director->transactions()->where('type', 'capital_injection')->sum('amount');
+            $directInjected = (float) $director->transactions()->where('type', 'capital_injection')->sum('amount');
+            $expensesPaid = (float) $director->transactions()->where('type', 'capital_expense')->sum('amount');
             $withdrawn = (float) $director->transactions()->where('type', 'withdrawal')->sum('amount');
-            $consumed = (float) $director->transactions()->where('type', 'capital_expense')->sum('amount');
             $profit = (float) $director->transactions()->where('type', 'profit_credit')->sum('amount');
-            $netCapital = max(0, ($injected + $profit) - ($consumed + $withdrawn));
+            
+            // Total Capital = Direct Cash Injections + Out-of-pocket Expenses Paid by Director
+            $totalInjected = $directInjected + $expensesPaid;
+            $netCapital = max(0, ($totalInjected + $profit) - $withdrawn);
             $liveBalance = $netCapital;
 
             $totalNetCapitalAll += $netCapital;
-            $totalCapitalInjectedAll += $injected;
-            $totalConsumedAll += $consumed;
+            $totalCapitalInjectedAll += $totalInjected;
+            $totalExpensesPaidAll += $expensesPaid;
+            $totalDirectInjectedAll += $directInjected;
             $totalProfitAll += $profit;
             $totalWithdrawnAll += $withdrawn;
 
@@ -75,30 +80,35 @@ class DirectorEquityController extends Controller
                 'cnic' => $director->cnic,
                 'phone' => $director->phone,
                 'email' => $director->email,
+                'share_percentage' => (float) $director->share_percentage,
+                'expected_monthly_contribution' => (float) ($director->expected_monthly_contribution ?? 0.0),
                 'bank_name' => $director->bank_name,
                 'bank_account_no' => $director->bank_account_no,
                 'bank_iban' => $director->bank_iban,
                 'status' => $director->status,
                 'net_capital' => $netCapital,
-                'total_capital_injected' => $injected,
-                'total_capital_consumed' => $consumed,
+                'total_capital_injected' => $totalInjected,
+                'total_expenses_paid' => $expensesPaid,
+                'total_direct_injected' => $directInjected,
+                'total_capital_consumed' => $expensesPaid, // Aliased for backward compatibility
                 'total_profit_earned' => $profit,
                 'total_withdrawn' => $withdrawn,
                 'live_balance' => $liveBalance,
             ];
         }
 
-        // Calculate dynamic capital share percentage based on Net Capital (Injected - Withdrawn)
+        // Calculate dynamic capital share percentage based on Net Capital while preserving configured agreed profit share
         $directors = array_map(function ($d) use ($totalNetCapitalAll) {
             $dynamicShare = $totalNetCapitalAll > 0 
                 ? round(($d['net_capital'] / $totalNetCapitalAll) * 100, 2) 
                 : 0.00;
-            $d['share_percentage'] = $dynamicShare;
+            $d['capital_share_percentage'] = $dynamicShare;
             return $d;
         }, $directorsData);
 
         $totalSharePercentage = (float) array_sum(array_column($directors, 'share_percentage'));
-        $totalUndrawnPool = max(0, ($totalCapitalInjectedAll + $totalProfitAll) - ($totalConsumedAll + $totalWithdrawnAll));
+        $totalExpectedContributions = (float) array_sum(array_column($directors, 'expected_monthly_contribution'));
+        $totalUndrawnPool = $totalNetCapitalAll;
 
         // Recent Batches
         $recentDistributions = ProfitDistribution::with('distributor:id,name')->latest()->take(6)->get();
@@ -109,11 +119,14 @@ class DirectorEquityController extends Controller
                 'total_directors' => count($directors),
                 'total_net_capital' => $totalNetCapitalAll,
                 'total_capital_injected' => $totalCapitalInjectedAll,
-                'total_capital_consumed' => $totalConsumedAll,
+                'total_expenses_paid' => $totalExpensesPaidAll,
+                'total_direct_injected' => $totalDirectInjectedAll,
+                'total_capital_consumed' => $totalExpensesPaidAll,
                 'total_profit_allocated' => $totalProfitAll,
                 'total_withdrawn' => $totalWithdrawnAll,
                 'total_undrawn_pool' => $totalUndrawnPool,
                 'total_share_percentage' => $totalSharePercentage,
+                'total_expected_contributions' => $totalExpectedContributions,
             ],
             'recent_distributions' => $recentDistributions,
         ]);
@@ -127,6 +140,7 @@ class DirectorEquityController extends Controller
         $request->validate([
             'name' => 'required|string|max:255',
             'share_percentage' => 'required|numeric|min:0|max:100',
+            'expected_monthly_contribution' => 'nullable|numeric|min:0',
             'cnic' => 'nullable|string|max:25',
             'phone' => 'nullable|string|max:25',
             'email' => 'nullable|email|max:255',
@@ -135,9 +149,27 @@ class DirectorEquityController extends Controller
             'bank_iban' => 'nullable|string|max:50',
         ]);
 
+        $userId = null;
+        if ($request->filled('email')) {
+            $existingUser = User::where('email', $request->email)->first();
+            if ($existingUser) {
+                $userId = $existingUser->id;
+            } else {
+                $newUser = User::create([
+                    'name' => $request->name,
+                    'email' => $request->email,
+                    'role' => 'director',
+                    'is_active' => true,
+                ]);
+                $userId = $newUser->id;
+            }
+        }
+
         $director = Director::create([
+            'user_id' => $userId,
             'name' => $request->name,
             'share_percentage' => $request->share_percentage,
+            'expected_monthly_contribution' => $request->expected_monthly_contribution ?? 0,
             'cnic' => $request->cnic,
             'phone' => $request->phone,
             'email' => $request->email,
@@ -163,6 +195,7 @@ class DirectorEquityController extends Controller
         $request->validate([
             'name' => 'required|string|max:255',
             'share_percentage' => 'required|numeric|min:0|max:100',
+            'expected_monthly_contribution' => 'nullable|numeric|min:0',
             'cnic' => 'nullable|string|max:25',
             'phone' => 'nullable|string|max:25',
             'email' => 'nullable|email|max:255',
@@ -172,10 +205,28 @@ class DirectorEquityController extends Controller
             'status' => 'nullable|in:active,inactive',
         ]);
 
-        $director->update($request->only([
-            'name', 'share_percentage', 'cnic', 'phone', 'email',
+        $userId = $director->user_id;
+        if ($request->filled('email')) {
+            $existingUser = User::where('email', $request->email)->first();
+            if ($existingUser) {
+                $userId = $existingUser->id;
+            } else {
+                $newUser = User::create([
+                    'name' => $request->name,
+                    'email' => $request->email,
+                    'role' => 'director',
+                    'is_active' => true,
+                ]);
+                $userId = $newUser->id;
+            }
+        }
+
+        $updateData = $request->only([
+            'name', 'share_percentage', 'expected_monthly_contribution', 'cnic', 'phone', 'email',
             'bank_name', 'bank_account_no', 'bank_iban', 'status'
-        ]));
+        ]);
+        $updateData['user_id'] = $userId;
+        $director->update($updateData);
 
         return response()->json([
             'message' => 'Director updated successfully.',
@@ -191,23 +242,24 @@ class DirectorEquityController extends Controller
         $director = Director::findOrFail($id);
         $month = $request->get('month'); // e.g. "2026-08"
 
-        // Single indexed aggregate query for this partner's net capital (injected - withdrawn)
+        // Single indexed aggregate query for this partner's net capital
         $lifetimeAggregates = DB::table('director_transactions')
             ->selectRaw("
-                SUM(CASE WHEN type = 'capital_injection' THEN amount ELSE 0 END) as total_injected,
+                SUM(CASE WHEN type = 'capital_injection' THEN amount ELSE 0 END) as total_direct_injected,
+                SUM(CASE WHEN type = 'capital_expense' THEN amount ELSE 0 END) as total_expenses_paid,
                 SUM(CASE WHEN type = 'withdrawal' THEN amount ELSE 0 END) as total_withdrawn,
-                SUM(CASE WHEN type = 'capital_expense' THEN amount ELSE 0 END) as total_consumed,
                 SUM(CASE WHEN type = 'profit_credit' THEN amount ELSE 0 END) as total_profit
             ")
             ->where('director_id', $id)
             ->first();
 
-        $lifetimeInjected = (float) ($lifetimeAggregates->total_injected ?? 0);
+        $lifetimeDirectInjected = (float) ($lifetimeAggregates->total_direct_injected ?? 0);
+        $lifetimeExpensesPaid = (float) ($lifetimeAggregates->total_expenses_paid ?? 0);
+        $lifetimeInjected = $lifetimeDirectInjected + $lifetimeExpensesPaid;
         $lifetimeWithdrawn = (float) ($lifetimeAggregates->total_withdrawn ?? 0);
-        $lifetimeConsumed = (float) ($lifetimeAggregates->total_consumed ?? 0);
         $lifetimeProfit = (float) ($lifetimeAggregates->total_profit ?? 0);
-        $lifetimeNetCapital = max(0, $lifetimeInjected - $lifetimeWithdrawn);
-        $lifetimeLiveBalance = max(0, ($lifetimeInjected + $lifetimeProfit) - ($lifetimeConsumed + $lifetimeWithdrawn));
+        $lifetimeNetCapital = max(0, ($lifetimeInjected + $lifetimeProfit) - $lifetimeWithdrawn);
+        $lifetimeLiveBalance = $lifetimeNetCapital;
 
         $txQuery = $director->transactions()->with(['creator:id,name,role', 'expense']);
 
@@ -220,8 +272,8 @@ class DirectorEquityController extends Controller
             // 1 fast indexed aggregate query for opening balance prior to this month
             $priorAggregates = DB::table('director_transactions')
                 ->selectRaw("
-                    SUM(CASE WHEN type IN ('capital_injection', 'profit_credit') THEN amount ELSE 0 END) as total_credits,
-                    SUM(CASE WHEN type IN ('withdrawal', 'capital_expense') THEN amount ELSE 0 END) as total_debits
+                    SUM(CASE WHEN type IN ('capital_injection', 'capital_expense', 'profit_credit') THEN amount ELSE 0 END) as total_credits,
+                    SUM(CASE WHEN type = 'withdrawal' THEN amount ELSE 0 END) as total_debits
                 ")
                 ->where('director_id', $id)
                 ->where('date', '<', $startOfMonth)
@@ -265,7 +317,7 @@ class DirectorEquityController extends Controller
         $periodProfitShares = 0.0;
 
         foreach ($transactions as $tx) {
-            $isCredit = in_array($tx->type, ['capital_injection', 'profit_credit']);
+            $isCredit = in_array($tx->type, ['capital_injection', 'capital_expense', 'profit_credit']);
             $amount = (float) $tx->amount;
 
             if ($isCredit) {
@@ -285,8 +337,8 @@ class DirectorEquityController extends Controller
             }
 
             $typeLabel = match ($tx->type) {
-                'capital_injection' => 'Capital Deposit',
-                'capital_expense' => 'Capital Usage / Expense',
+                'capital_injection' => 'Direct Capital Deposit',
+                'capital_expense' => 'Director Paid Expense (Capital Contribution)',
                 'profit_credit' => 'Monthly Profit Share',
                 'withdrawal' => 'Director Drawing / Withdrawal',
                 default => ucfirst($tx->type),
@@ -323,8 +375,8 @@ class DirectorEquityController extends Controller
             }
         }
 
-        $periodCredits = $periodInjections + $periodProfitShares;
-        $periodDebits = $periodUsage + $periodDrawings;
+        $periodCredits = $periodInjections + $periodUsage + $periodProfitShares;
+        $periodDebits = $periodDrawings;
         $closingBalance = max(0, ($openingBalance + $periodCredits) - $periodDebits);
 
         return response()->json([
@@ -336,7 +388,9 @@ class DirectorEquityController extends Controller
                 'cnic' => $director->cnic,
                 'net_capital' => $lifetimeNetCapital,
                 'total_capital_injected' => $lifetimeInjected,
-                'total_capital_consumed' => $lifetimeConsumed,
+                'total_expenses_paid' => $lifetimeExpensesPaid,
+                'total_direct_injected' => $lifetimeDirectInjected,
+                'total_capital_consumed' => $lifetimeExpensesPaid,
                 'total_withdrawn' => $lifetimeWithdrawn,
                 'live_balance' => $lifetimeLiveBalance,
                 'bank_name' => $director->bank_name,
@@ -372,12 +426,26 @@ class DirectorEquityController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['chairman', 'super_admin', 'admin'])) {
-            return response()->json(['message' => 'Unauthorized. Only the Chairman can deposit capital or record withdrawals.'], 403);
+        if (!in_array($user->role, ['chairman', 'director', 'super_admin', 'admin'])) {
+            return response()->json(['message' => 'Unauthorized. Only executive directors or administration can record transactions.'], 403);
+        }
+
+        if ($user->role === 'director') {
+            if ($request->type !== 'capital_injection') {
+                return response()->json(['message' => 'Unauthorized. Only the Chairman can record capital withdrawals.'], 403);
+            }
+            $director = Director::where('user_id', $user->id)->orWhere('email', $user->email)->first();
+            if (!$director) {
+                return response()->json(['message' => 'Director profile not found for the logged in user.'], 404);
+            }
+        } else {
+            $request->validate([
+                'director_id' => 'required|exists:directors,id',
+            ]);
+            $director = Director::findOrFail($request->director_id);
         }
 
         $request->validate([
-            'director_id' => 'required|exists:directors,id',
             'type' => 'required|in:capital_injection,withdrawal',
             'amount' => 'required|numeric|min:1|max:999999999',
             'date' => 'required|date',
@@ -386,8 +454,6 @@ class DirectorEquityController extends Controller
             'notes' => 'nullable|string|max:1000',
             'slip' => 'nullable|file|mimes:jpg,jpeg,png,pdf,webp|max:8192',
         ]);
-
-        $director = Director::findOrFail($request->director_id);
 
         // Overdraw protection for withdrawals
         if ($request->type === 'withdrawal') {
@@ -421,30 +487,43 @@ class DirectorEquityController extends Controller
 
         return response()->json([
             'message' => ($request->type === 'capital_injection')
-                ? "Capital injection of Rs. " . number_format($request->amount) . " credited to {$director->name}."
+                ? "Direct capital injection of Rs. " . number_format($request->amount) . " credited to {$director->name}."
                 : "Withdrawal of Rs. " . number_format($request->amount) . " debited from {$director->name}.",
             'data' => $transaction,
         ], 201);
     }
 
     /**
-     * Record a Capital Expense consumed from a specific Director's Capital Balance.
+     * Record an Expense paid directly by a Director out of pocket.
+     * Directly credits the Director's Capital Contribution and updates their dynamic equity.
      */
     public function storeCapitalExpense(Request $request)
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['chairman', 'super_admin', 'admin'])) {
-            return response()->json(['message' => 'Unauthorized. Only the Chairman can record capital expenses.'], 403);
+        if (!in_array($user->role, ['chairman', 'director', 'super_admin', 'admin'])) {
+            return response()->json(['message' => 'Unauthorized. Only executive directors or administration can record director expenses.'], 403);
+        }
+
+        if ($user->role === 'director') {
+            $director = Director::where('user_id', $user->id)->orWhere('email', $user->email)->first();
+            if (!$director) {
+                return response()->json(['message' => 'Director profile not found for the logged in user.'], 404);
+            }
+        } else {
+            $request->validate([
+                'director_id' => 'required|exists:directors,id',
+            ]);
+            $director = Director::findOrFail($request->director_id);
         }
 
         $request->validate([
-            'director_id' => 'required|exists:directors,id',
             'title' => 'required|string|max:255',
             'amount' => 'required|numeric|min:1|max:999999999',
             'date' => 'required|date',
-            'category_id' => 'nullable|exists:categories,id',
+            'category_id' => 'nullable',
             'payment_method' => 'nullable|string|max:100',
+            'reference_no' => 'nullable|string|max:100',
             'notes' => 'nullable|string|max:1000',
             'receipt' => 'nullable|file|mimes:jpg,jpeg,png,pdf,webp|max:8192',
         ]);
@@ -456,36 +535,32 @@ class DirectorEquityController extends Controller
 
         DB::beginTransaction();
         try {
-            // Pessimistic lock on Director record to prevent overdraw concurrency
-            $director = Director::where('id', $request->director_id)->lockForUpdate()->firstOrFail();
-            $liveBalance = $director->live_balance;
-
-            if ($request->amount > $liveBalance) {
-                if ($receiptPath && Storage::disk('public')->exists($receiptPath)) {
-                    Storage::disk('public')->delete($receiptPath);
-                }
-                return response()->json([
-                    'message' => "Insufficient capital balance for {$director->name}. Available: Rs. " . number_format($liveBalance, 0) . ", requested: Rs. " . number_format($request->amount, 0) . ".",
-                ], 422);
-            }
-
-            // Resolve Category Name
+            // Resolve or auto-create Category
             $categoryName = 'Capital Expenditure';
             if ($request->filled('category_id')) {
-                $cat = \App\Models\Category::find($request->category_id);
+                $cat = is_numeric($request->category_id) ? \App\Models\Category::find($request->category_id) : null;
                 if ($cat) {
                     $categoryName = $cat->name;
-                } elseif (is_string($request->category_id) && !is_numeric($request->category_id)) {
-                    $categoryName = $request->category_id;
+                } elseif (is_string($request->category_id) && trim($request->category_id) !== '') {
+                    $categoryName = trim($request->category_id);
                 }
-            } elseif ($request->filled('category')) {
-                $categoryName = $request->category;
+            } elseif ($request->filled('category') && trim($request->category) !== '') {
+                $categoryName = trim($request->category);
+            }
+
+            // Ensure the category is persisted in the categories table for future selection
+            if (!empty($categoryName) && $categoryName !== 'Capital Expenditure') {
+                \App\Models\Category::firstOrCreate(
+                    ['name' => $categoryName],
+                    ['icon' => '🏷️', 'description' => 'Director Capital Expenditure']
+                );
             }
 
             $tierInfo = Expense::resolveTier((float) $request->amount);
-            $voucherNo = 'CAP-' . strtoupper(uniqid());
+            $voucherNo = 'DIR-' . strtoupper(uniqid());
+            $refNo = $request->reference_no ?: $voucherNo;
 
-            // Create Expense record
+            // Create Expense record marked specifically as 'director'
             $expense = Expense::create([
                 'voucher_no' => $voucherNo,
                 'title' => $request->title,
@@ -494,10 +569,10 @@ class DirectorEquityController extends Controller
                 'amount' => $request->amount,
                 'amount_tier' => $tierInfo['tier'],
                 'tier_color' => $tierInfo['color'],
-                'expense_type' => 'capital',
+                'expense_type' => 'director',
                 'director_id' => $director->id,
-                'payment_method' => $request->payment_method ?? 'Capital Account',
-                'payment_reference' => $voucherNo,
+                'payment_method' => $request->payment_method ?? 'Director Personal Funds',
+                'payment_reference' => $refNo,
                 'receipt_url' => $receiptPath,
                 'status' => 'disbursed',
                 'created_by' => $user->id,
@@ -505,14 +580,14 @@ class DirectorEquityController extends Controller
                 'disbursed_at' => $request->date ?? now(),
             ]);
 
-            // Create DirectorTransaction debit record
+            // Create DirectorTransaction record which CREDITS director capital
             $transaction = DirectorTransaction::create([
                 'director_id' => $director->id,
                 'type' => 'capital_expense',
                 'amount' => $request->amount,
                 'date' => $request->date,
-                'payment_method' => $request->payment_method ?? 'Capital Account',
-                'reference_no' => $voucherNo,
+                'payment_method' => $request->payment_method ?? 'Director Personal Funds',
+                'reference_no' => $refNo,
                 'expense_id' => $expense->id,
                 'slip_url' => $receiptPath,
                 'notes' => $request->title . ($request->notes ? " - {$request->notes}" : ''),
@@ -525,7 +600,7 @@ class DirectorEquityController extends Controller
             FcmService::notifyDirectorTransaction($transaction);
 
             return response()->json([
-                'message' => "Capital expense of Rs. " . number_format($request->amount) . " successfully recorded against {$director->name}.",
+                'message' => "Director expense of Rs. " . number_format($request->amount) . " paid by {$director->name} recorded. Capital increased.",
                 'data' => $transaction,
                 'expense' => $expense,
             ], 201);
@@ -540,7 +615,7 @@ class DirectorEquityController extends Controller
     }
 
     /**
-     * Execute Month-End Profit Distribution Batch (1-Click Formula Split).
+     * Execute Month-End Profit Distribution Batch with Partner Profit Shares and Shortfall Settlements.
      */
     public function distributeProfit(Request $request)
     {
@@ -555,6 +630,12 @@ class DirectorEquityController extends Controller
             'total_profit_pool' => 'required|numeric|min:1|max:999999999',
             'date' => 'required|date',
             'notes' => 'nullable|string|max:1000',
+            'expected_contributions' => 'nullable|array',
+            'settlement_transfers' => 'nullable|array',
+            'settlement_transfers.*.from_director_id' => 'required_with:settlement_transfers|exists:directors,id',
+            'settlement_transfers.*.to_director_id' => 'required_with:settlement_transfers|exists:directors,id',
+            'settlement_transfers.*.amount' => 'required_with:settlement_transfers|numeric|min:0.01',
+            'settlement_transfers.*.notes' => 'nullable|string|max:255',
         ]);
 
         $periodMonth = $request->period_month;
@@ -575,51 +656,168 @@ class DirectorEquityController extends Controller
             ], 422);
         }
 
-        $directors = Director::where('status', 'active')->get();
+        $directors = Director::where('status', 'active')->orderBy('id')->get();
         if ($directors->isEmpty()) {
             return response()->json(['message' => 'No active directors found.'], 422);
         }
 
-        // Calculate total net capital (Injected + Profit Credits - Consumed - Withdrawn)
-        $directorsNetCapital = [];
-        $totalNetCapitalAll = 0.0;
-        foreach ($directors as $director) {
-            $credits = (float) $director->transactions()->whereIn('type', ['capital_injection', 'profit_credit'])->sum('amount');
-            $debits = (float) $director->transactions()->whereIn('type', ['withdrawal', 'capital_expense'])->sum('amount');
-            $netCap = max(0, $credits - $debits);
-            $directorsNetCapital[$director->id] = $netCap;
-            $totalNetCapitalAll += $netCap;
+        // Validate that total profit share percentages sum to 100%
+        $totalSharePct = (float) $directors->sum('share_percentage');
+        if (abs($totalSharePct - 100.00) > 0.05) {
+            return response()->json([
+                'message' => "Total active partner profit share percentages must sum to 100.00%. Current configured sum is {$totalSharePct}%. Please adjust partner shares first.",
+            ], 422);
         }
 
-        if ($totalNetCapitalAll <= 0) {
-            return response()->json(['message' => 'Active net capital must be available to distribute profits.'], 422);
+        // Save updated expected contributions if provided
+        if ($request->has('expected_contributions') && is_array($request->expected_contributions)) {
+            foreach ($request->expected_contributions as $dirId => $expAmt) {
+                Director::where('id', $dirId)->update(['expected_monthly_contribution' => max(0, (float) $expAmt)]);
+            }
+            // Refresh directors with updated values
+            $directors = Director::where('status', 'active')->orderBy('id')->get();
+        }
+
+        // Calculate base profit for each director based on configured percentage
+        $directorBaseProfits = [];
+        foreach ($directors as $director) {
+            $directorBaseProfits[$director->id] = round($totalPool * ($director->share_percentage / 100), 2);
+        }
+
+        // Process settlement transfers
+        $settlementTransfers = $request->input('settlement_transfers', []);
+        $transfersOutByDirector = [];
+        $transfersInByDirector = [];
+
+        foreach ($settlementTransfers as $st) {
+            $fromId = (int) $st['from_director_id'];
+            $toId = (int) $st['to_director_id'];
+            $amount = (float) $st['amount'];
+
+            if ($fromId === $toId) {
+                return response()->json(['message' => 'Transfer donor and recipient partner cannot be the same.'], 422);
+            }
+
+            $transfersOutByDirector[$fromId] = ($transfersOutByDirector[$fromId] ?? 0.0) + $amount;
+            $transfersInByDirector[$toId] = ($transfersInByDirector[$toId] ?? 0.0) + $amount;
+        }
+
+        // Validate negative payout protection: transfers_out <= base_profit
+        foreach ($transfersOutByDirector as $fromId => $totalOut) {
+            $baseProf = $directorBaseProfits[$fromId] ?? 0.0;
+            $dirName = $directors->firstWhere('id', $fromId)?->name ?? "Partner #{$fromId}";
+            if ($totalOut > $baseProf + 0.01) {
+                return response()->json([
+                    'message' => "Transferred settlement from {$dirName} (Rs. " . number_format($totalOut) . ") exceeds their earned base profit share of Rs. " . number_format($baseProf) . ".",
+                ], 422);
+            }
         }
 
         DB::beginTransaction();
         try {
+            // Build detailed snapshot for immutable historical record
+            $breakdownList = [];
+            foreach ($directors as $director) {
+                $base = $directorBaseProfits[$director->id] ?? 0.0;
+                $out = $transfersOutByDirector[$director->id] ?? 0.0;
+                $in = $transfersInByDirector[$director->id] ?? 0.0;
+                $netCash = max(0, $base - $out);
+
+                $breakdownList[] = [
+                    'director_id' => $director->id,
+                    'director_name' => $director->name,
+                    'share_percentage' => (float) $director->share_percentage,
+                    'expected_monthly_contribution' => (float) ($director->expected_monthly_contribution ?? 0.0),
+                    'base_profit' => $base,
+                    'transfer_out_equity' => $out,
+                    'transfer_in_settlement' => $in,
+                    'net_cash_profit' => $netCash,
+                    'total_withdrawable_addition' => $netCash + $in,
+                    'capital_equity_increase' => $out,
+                ];
+            }
+
             $distribution = ProfitDistribution::create([
                 'period_month' => $periodMonth,
                 'total_profit_pool' => $totalPool,
                 'notes' => $request->notes,
+                'distribution_breakdown' => [
+                    'total_profit_pool' => $totalPool,
+                    'period_month' => $periodMonth,
+                    'partners' => $breakdownList,
+                    'transfers' => $settlementTransfers,
+                ],
                 'distributed_by' => $user->id,
             ]);
 
+            // Create ledger transactions for each partner
             foreach ($directors as $director) {
-                $netCap = $directorsNetCapital[$director->id] ?? 0.0;
-                $directorSharePct = round(($netCap / $totalNetCapitalAll) * 100, 2);
-                $directorShare = round($totalPool * ($netCap / $totalNetCapitalAll), 2);
+                $base = $directorBaseProfits[$director->id] ?? 0.0;
+                $out = $transfersOutByDirector[$director->id] ?? 0.0;
+                $netCash = max(0, $base - $out);
 
-                if ($directorShare > 0) {
+                // 1. Credit Net Cash Profit Payout (if any remaining)
+                if ($netCash > 0) {
                     DirectorTransaction::create([
                         'director_id' => $director->id,
                         'type' => 'profit_credit',
-                        'amount' => $directorShare,
+                        'amount' => $netCash,
                         'date' => $request->date,
                         'payment_method' => 'Profit Share Allocation',
                         'reference_no' => "DIV-{$periodMonth}",
                         'period_month' => $periodMonth,
                         'profit_distribution_id' => $distribution->id,
-                        'notes' => "Monthly profit share ({$directorSharePct}% net capital share) for {$periodMonth}",
+                        'notes' => "Monthly profit share ({$director->share_percentage}%) for {$periodMonth}" . ($out > 0 ? " (Net after Rs. " . number_format($out) . " capital settlement)" : ""),
+                        'created_by' => $user->id,
+                    ]);
+                }
+
+                // 2. Credit Retained Profit to Capital Equity for donor partner
+                if ($out > 0) {
+                    $recipientNotes = [];
+                    foreach ($settlementTransfers as $st) {
+                        if ((int)$st['from_director_id'] === $director->id && (float)$st['amount'] > 0) {
+                            $toDir = $directors->firstWhere('id', (int)$st['to_director_id']);
+                            if ($toDir) {
+                                $recipientNotes[] = "Rs. " . number_format((float)$st['amount'], 0) . " to {$toDir->name}";
+                            }
+                        }
+                    }
+                    $recipientSummary = !empty($recipientNotes) ? " (" . implode(', ', $recipientNotes) . ")" : "";
+
+                    DirectorTransaction::create([
+                        'director_id' => $director->id,
+                        'type' => 'capital_injection',
+                        'amount' => $out,
+                        'date' => $request->date,
+                        'payment_method' => 'Retained Profit to Capital Equity',
+                        'reference_no' => "EQ-SETTLE-{$periodMonth}",
+                        'period_month' => $periodMonth,
+                        'profit_distribution_id' => $distribution->id,
+                        'notes' => "Capital equity increase from retained profit share{$recipientSummary} for {$periodMonth}",
+                        'created_by' => $user->id,
+                    ]);
+                }
+            }
+
+            // 3. Credit Settlement Transfers received by recipient (loan / surplus) partners
+            foreach ($settlementTransfers as $st) {
+                $fromId = (int) $st['from_director_id'];
+                $toId = (int) $st['to_director_id'];
+                $amt = (float) $st['amount'];
+                $fromDir = $directors->firstWhere('id', $fromId);
+
+                if ($amt > 0 && $fromDir) {
+                    DirectorTransaction::create([
+                        'director_id' => $toId,
+                        'type' => 'profit_credit',
+                        'amount' => $amt,
+                        'date' => $request->date,
+                        'payment_method' => 'Profit Share Transfer',
+                        'reference_no' => "REC-DIR-{$fromDir->id}-{$periodMonth}",
+                        'period_month' => $periodMonth,
+                        'profit_distribution_id' => $distribution->id,
+                        'notes' => "Profit Settlement Received (Loan Recovery from {$fromDir->name}) for {$periodMonth}",
                         'created_by' => $user->id,
                     ]);
                 }
@@ -660,8 +858,8 @@ class DirectorEquityController extends Controller
             // 1 fast indexed aggregate query for opening balance prior to this month
             $priorAggregates = DB::table('director_transactions')
                 ->selectRaw("
-                    SUM(CASE WHEN type IN ('capital_injection', 'profit_credit') THEN amount ELSE 0 END) as total_credits,
-                    SUM(CASE WHEN type IN ('withdrawal', 'capital_expense') THEN amount ELSE 0 END) as total_debits
+                    SUM(CASE WHEN type IN ('capital_injection', 'capital_expense', 'profit_credit') THEN amount ELSE 0 END) as total_credits,
+                    SUM(CASE WHEN type = 'withdrawal' THEN amount ELSE 0 END) as total_debits
                 ")
                 ->where('director_id', $id)
                 ->where('date', '<', $startOfMonth)
@@ -693,7 +891,7 @@ class DirectorEquityController extends Controller
         }
 
         foreach ($transactions as $tx) {
-            $isCredit = in_array($tx->type, ['capital_injection', 'profit_credit']);
+            $isCredit = in_array($tx->type, ['capital_injection', 'capital_expense', 'profit_credit']);
             $amount = (float) $tx->amount;
 
             if ($isCredit) {
@@ -703,8 +901,8 @@ class DirectorEquityController extends Controller
             }
 
             $typeLabel = match ($tx->type) {
-                'capital_injection' => 'Capital Deposit',
-                'capital_expense' => 'Capital Usage / Expense',
+                'capital_injection' => 'Direct Capital Deposit',
+                'capital_expense' => 'Director Paid Expense (Capital Addition)',
                 'profit_credit' => 'Monthly Profit Share',
                 'withdrawal' => 'Director Withdrawal',
                 default => ucfirst($tx->type),
@@ -737,8 +935,8 @@ class DirectorEquityController extends Controller
             'month' => $month,
             'statement' => $statement,
             'opening_balance' => $openingBalance,
-            'total_credits' => (float) $transactions->whereIn('type', ['capital_injection', 'profit_credit'])->sum('amount'),
-            'total_debits' => (float) $transactions->whereIn('type', ['withdrawal', 'capital_expense'])->sum('amount'),
+            'total_credits' => (float) $transactions->whereIn('type', ['capital_injection', 'capital_expense', 'profit_credit'])->sum('amount'),
+            'total_debits' => (float) $transactions->where('type', 'withdrawal')->sum('amount'),
             'closing_balance' => max(0, $runningBalance),
         ], $filename);
     }
@@ -746,7 +944,7 @@ class DirectorEquityController extends Controller
     /**
      * Profit & Loss (P & L) Report:
      * Govt Inflow Income - General Expenses = Net Distributable Profit / Surplus
-     * Breakdown of partner shares.
+     * Breakdown of partner shares based on configured percentages, monthly expected contributions, and loans/shortfalls.
      */
     public function pnlReport(Request $request)
     {
@@ -771,43 +969,61 @@ class DirectorEquityController extends Controller
         }
         $totalGeneralExpenses = (float) $expenseQuery->sum('amount');
 
-        // 3. Remaining Surplus / Profit
+        // 3. Remaining Distributable Profit / Surplus
         $remainingAmount = max(0, $totalGovtIncome - $totalGeneralExpenses);
         $netMargin = $totalGovtIncome > 0 ? round(($remainingAmount / $totalGovtIncome) * 100, 1) : 0.0;
 
-        // 4. Partner Dynamic Shares & Profit Allocation (1 fast grouped indexed query)
+        // 4. Partner Net Capital Aggregates
         $directors = Director::where('status', 'active')->orderBy('id')->get();
         $dirAggregates = DB::table('director_transactions')
             ->selectRaw("
                 director_id,
-                SUM(CASE WHEN type IN ('capital_injection', 'profit_credit') THEN amount ELSE 0 END) as total_credits,
-                SUM(CASE WHEN type IN ('withdrawal', 'capital_expense') THEN amount ELSE 0 END) as total_debits
+                SUM(CASE WHEN type IN ('capital_injection', 'capital_expense', 'profit_credit') THEN amount ELSE 0 END) as total_credits,
+                SUM(CASE WHEN type = 'withdrawal' THEN amount ELSE 0 END) as total_debits
             ")
             ->whereIn('type', ['capital_injection', 'profit_credit', 'withdrawal', 'capital_expense'])
             ->groupBy('director_id')
             ->get()
             ->keyBy('director_id');
 
-        $directorsNetCapital = [];
-        $totalNetCapitalAll = 0.0;
+        $endOfMonth = $month ? Carbon::parse($month . '-01')->endOfMonth()->toDateString() : null;
+
+        // Fetch cumulative capital contributions (injections + expenses) up to this month
+        $dirCumulativePayments = DB::table('director_transactions')
+            ->selectRaw("
+                director_id,
+                SUM(CASE WHEN type IN ('capital_injection', 'capital_expense') THEN amount ELSE 0 END) as total_capital_paid
+            ")
+            ->when($month && $endOfMonth, function ($q) use ($endOfMonth) {
+                $q->where('date', '<=', $endOfMonth);
+            })
+            ->groupBy('director_id')
+            ->get()
+            ->keyBy('director_id');
+
+        $directorsBreakdown = [];
+        $totalExpectedAll = 0.0;
+        $totalPaidInMonthAll = 0.0;
 
         foreach ($directors as $director) {
             $agg = $dirAggregates->get($director->id);
             $credits = (float) ($agg->total_credits ?? 0);
             $debits = (float) ($agg->total_debits ?? 0);
             $netCap = max(0, $credits - $debits);
-            $directorsNetCapital[$director->id] = $netCap;
-            $totalNetCapitalAll += $netCap;
-        }
 
-        $directorsBreakdown = [];
-        foreach ($directors as $director) {
-            $netCap = $directorsNetCapital[$director->id] ?? 0.0;
-            $sharePercentage = $totalNetCapitalAll > 0 
-                ? round(($netCap / $totalNetCapitalAll) * 100, 2) 
-                : (float) $director->share_percentage;
+            $sharePct = (float) $director->share_percentage;
+            $expectedAmt = (float) ($director->expected_monthly_contribution ?? 0.0);
+            $totalCapitalPaid = (float) ($dirCumulativePayments->get($director->id)?->total_capital_paid ?? 0.0);
             
-            $profitShare = round($remainingAmount * ($sharePercentage / 100), 2);
+            $variance = round($totalCapitalPaid - $expectedAmt, 2);
+            $isSurplus = $variance > 0;
+            $loanAmount = max(0, $variance);
+            $shortfallAmount = max(0, -$variance);
+
+            $profitShare = round($remainingAmount * ($sharePct / 100), 2);
+
+            $totalExpectedAll += $expectedAmt;
+            $totalPaidInMonthAll += $totalCapitalPaid;
 
             $directorsBreakdown[] = [
                 'id' => $director->id,
@@ -816,8 +1032,17 @@ class DirectorEquityController extends Controller
                 'phone' => $director->phone,
                 'cnic' => $director->cnic,
                 'net_capital' => $netCap,
-                'share_percentage' => $sharePercentage,
+                'live_balance' => $netCap,
+                'share_percentage' => $sharePct,
+                'expected_monthly_contribution' => $expectedAmt,
+                'total_capital_paid' => $totalCapitalPaid,
+                'month_paid_amount' => $totalCapitalPaid,
+                'contribution_variance' => $variance,
+                'is_surplus' => $isSurplus,
+                'loan_amount' => $loanAmount,
+                'shortfall_amount' => $shortfallAmount,
                 'profit_share' => $profitShare,
+                'base_profit_share' => $profitShare,
                 'bank_name' => $director->bank_name,
                 'bank_account_no' => $director->bank_account_no,
             ];
@@ -834,6 +1059,7 @@ class DirectorEquityController extends Controller
                     'distributed_at' => $distRecord->created_at->toIso8601String(),
                     'distributed_by_name' => $distRecord->distributor?->name ?? 'Administrator',
                     'notes' => $distRecord->notes,
+                    'breakdown' => $distRecord->distribution_breakdown,
                 ];
             }
         }
@@ -846,10 +1072,134 @@ class DirectorEquityController extends Controller
                 'remaining_amount' => $remainingAmount,
                 'remaining_profit' => $remainingAmount,
                 'net_margin_percentage' => $netMargin,
+                'total_expected_contributions' => $totalExpectedAll,
+                'total_paid_in_month' => $totalPaidInMonthAll,
                 'is_distributed' => !is_null($distribution),
                 'distribution' => $distribution,
             ],
             'directors' => $directorsBreakdown,
         ]);
+    }
+
+    /**
+     * Dedicated Director Expenses Report / Ledger.
+     */
+    public function directorExpensesReport(Request $request)
+    {
+        $query = Expense::with(['director:id,name,email,share_percentage', 'creator:id,name,role'])
+            ->where('expense_type', 'director')
+            ->orderBy('disbursed_at', 'desc')
+            ->orderBy('id', 'desc');
+
+        if ($request->filled('director_id')) {
+            $query->where('director_id', $request->director_id);
+        }
+
+        if ($request->filled('category')) {
+            $query->where('category', $request->category);
+        }
+
+        if ($request->filled('month')) {
+            $month = $request->month; // e.g. "2026-09"
+            $start = Carbon::parse($month . '-01')->startOfMonth()->toDateTimeString();
+            $end = Carbon::parse($month . '-01')->endOfMonth()->toDateTimeString();
+            $query->whereBetween('disbursed_at', [$start, $end]);
+        }
+
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                  ->orWhere('description', 'like', "%{$search}%")
+                  ->orWhere('payment_reference', 'like', "%{$search}%")
+                  ->orWhereHas('director', function ($dq) use ($search) {
+                      $dq->where('name', 'like', "%{$search}%");
+                  });
+            });
+        }
+
+        $allExpenses = (clone $query)->get();
+        $totalAmount = (float) $allExpenses->sum('amount');
+        $totalCount = $allExpenses->count();
+
+        // Breakdown by category
+        $byCategory = $allExpenses->groupBy('category')->map(function ($items, $cat) use ($totalAmount) {
+            $catTotal = (float) $items->sum('amount');
+            return [
+                'category' => $cat,
+                'count' => $items->count(),
+                'total_amount' => $catTotal,
+                'percentage' => $totalAmount > 0 ? round(($catTotal / $totalAmount) * 100, 1) : 0,
+            ];
+        })->values();
+
+        // Breakdown by director
+        $byDirector = $allExpenses->groupBy('director_id')->map(function ($items, $dId) use ($totalAmount) {
+            $dTotal = (float) $items->sum('amount');
+            $dirName = $items->first()->director->name ?? 'Partner';
+            return [
+                'director_id' => $dId,
+                'director_name' => $dirName,
+                'count' => $items->count(),
+                'total_amount' => $dTotal,
+                'percentage' => $totalAmount > 0 ? round(($dTotal / $totalAmount) * 100, 1) : 0,
+            ];
+        })->values();
+
+        $perPage = (int) $request->get('per_page', 50);
+        $paginated = $query->paginate($perPage);
+
+        return response()->json([
+            'data' => $paginated->items(),
+            'current_page' => $paginated->currentPage(),
+            'last_page' => $paginated->lastPage(),
+            'per_page' => $paginated->perPage(),
+            'total' => $paginated->total(),
+            'summary' => [
+                'total_amount' => $totalAmount,
+                'total_count' => $totalCount,
+                'breakdown_by_category' => $byCategory,
+                'breakdown_by_director' => $byDirector,
+            ],
+        ]);
+    }
+
+    /**
+     * Export Director Expenses Report PDF.
+     */
+    public function exportDirectorExpensesPdf(Request $request, DocumentPdfService $pdfService)
+    {
+        $query = Expense::with(['director:id,name,email', 'creator:id,name,role'])
+            ->where('expense_type', 'director')
+            ->orderBy('disbursed_at', 'desc');
+
+        if ($request->filled('director_id')) {
+            $query->where('director_id', $request->director_id);
+        }
+        if ($request->filled('category')) {
+            $query->where('category', $request->category);
+        }
+        if ($request->filled('month')) {
+            $month = $request->month;
+            $start = Carbon::parse($month . '-01')->startOfMonth()->toDateTimeString();
+            $end = Carbon::parse($month . '-01')->endOfMonth()->toDateTimeString();
+            $query->whereBetween('disbursed_at', [$start, $end]);
+        }
+
+        $expenses = $query->get();
+        $totalAmount = (float) $expenses->sum('amount');
+
+        $docTitle = "DIRECTOR EXPENSES & CAPITAL ASSETS REPORT";
+        $filename = "Director_Expenses_Report_" . ($request->month ?? date('Y-m')) . ".pdf";
+
+        return $pdfService->download('pdf.director_expenses_report', [
+            'lang' => 'en',
+            'doc_title' => $docTitle,
+            'doc_ref' => 'NSSE-DIR-EXP-' . ($request->month ?? date('Y-m')),
+            'doc_date' => date('d-M-Y'),
+            'month' => $request->month,
+            'expenses' => $expenses,
+            'total_amount' => $totalAmount,
+        ], $filename);
     }
 }

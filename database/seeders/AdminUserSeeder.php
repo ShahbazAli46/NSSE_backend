@@ -12,12 +12,12 @@ class AdminUserSeeder extends Seeder
      */
     public function run(): void
     {
-        // Primary Admin
+        // Primary Super Admin
         $admin = \App\Models\User::updateOrCreate(
             ['email' => 'shahbaz.ali46@gmail.com'],
             [
-                'name' => 'Admin Shahbaz Ali',
-                'role' => 'admin',
+                'name' => 'Shahbaz Ali',
+                'role' => 'super_admin',
                 'password' => null,
                 'email_verified_at' => now(),
             ]

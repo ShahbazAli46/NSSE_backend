@@ -56,7 +56,7 @@ class TeacherController extends Controller
     {
         $currentUser = $request->user();
 
-        if (!in_array($currentUser->role, ['principal', 'super_admin', 'admin', 'chairman'])) {
+        if (!in_array($currentUser->role, ['hr', 'principal', 'super_admin', 'admin', 'chairman'])) {
             return response()->json(['message' => 'Unauthorized. Only the Principal or Administrator can add teachers.'], 403);
         }
 
@@ -75,6 +75,10 @@ class TeacherController extends Controller
             'date_of_joining' => 'nullable|date',
             'salary' => 'nullable|numeric|min:0|max:99999999',
             'allowances' => 'nullable',
+            'payment_method' => 'nullable|in:bank,cash',
+            'bank_name' => 'nullable|string|max:100',
+            'account_title' => 'nullable|string|max:150',
+            'account_number' => 'nullable|string|max:100',
             'status' => 'nullable|in:active,on_leave,inactive',
         ]);
 
@@ -125,6 +129,10 @@ class TeacherController extends Controller
                 'date_of_joining' => $request->date_of_joining,
                 'salary' => $request->salary ? (float) $request->salary : 0,
                 'allowances' => $allowances,
+                'payment_method' => $request->input('payment_method', 'bank'),
+                'bank_name' => $request->bank_name,
+                'account_title' => $request->account_title,
+                'account_number' => $request->account_number,
                 'status' => $status,
             ]);
 
@@ -157,7 +165,7 @@ class TeacherController extends Controller
     {
         $currentUser = $request->user();
 
-        if (!in_array($currentUser->role, ['principal', 'super_admin', 'admin', 'chairman'])) {
+        if (!in_array($currentUser->role, ['hr', 'principal', 'super_admin', 'admin', 'chairman'])) {
             return response()->json(['message' => 'Unauthorized.'], 403);
         }
 
@@ -178,6 +186,10 @@ class TeacherController extends Controller
             'date_of_joining' => 'nullable|date',
             'salary' => 'nullable|numeric|min:0|max:99999999',
             'allowances' => 'nullable',
+            'payment_method' => 'nullable|in:bank,cash',
+            'bank_name' => 'nullable|string|max:100',
+            'account_title' => 'nullable|string|max:150',
+            'account_number' => 'nullable|string|max:100',
             'status' => 'nullable|in:active,on_leave,inactive',
         ]);
 
@@ -204,6 +216,18 @@ class TeacherController extends Controller
         if ($request->has('date_of_joining')) $teacher->date_of_joining = $request->date_of_joining;
         if ($request->has('salary')) {
             $teacher->salary = (float) $request->salary;
+        }
+        if ($request->has('payment_method')) {
+            $teacher->payment_method = $request->payment_method;
+        }
+        if ($request->has('bank_name')) {
+            $teacher->bank_name = $request->bank_name;
+        }
+        if ($request->has('account_title')) {
+            $teacher->account_title = $request->account_title;
+        }
+        if ($request->has('account_number')) {
+            $teacher->account_number = $request->account_number;
         }
         if ($request->has('status')) {
             $teacher->status = $request->status;
@@ -233,7 +257,7 @@ class TeacherController extends Controller
     public function updateStatus(Request $request, $id)
     {
         $currentUser = $request->user();
-        if (!in_array($currentUser->role, ['principal', 'super_admin', 'admin', 'chairman'])) {
+        if (!in_array($currentUser->role, ['hr', 'principal', 'super_admin', 'admin', 'chairman'])) {
             return response()->json(['message' => 'Unauthorized.'], 403);
         }
 
@@ -262,7 +286,7 @@ class TeacherController extends Controller
     public function toggleStatus(Request $request, $id)
     {
         $currentUser = $request->user();
-        if (!in_array($currentUser->role, ['principal', 'super_admin', 'admin', 'chairman'])) {
+        if (!in_array($currentUser->role, ['hr', 'principal', 'super_admin', 'admin', 'chairman'])) {
             return response()->json(['message' => 'Unauthorized.'], 403);
         }
 
@@ -287,7 +311,7 @@ class TeacherController extends Controller
     public function destroy(Request $request, $id)
     {
         $currentUser = $request->user();
-        if (!in_array($currentUser->role, ['principal', 'super_admin', 'admin', 'chairman'])) {
+        if (!in_array($currentUser->role, ['hr', 'principal', 'super_admin', 'admin', 'chairman'])) {
             return response()->json(['message' => 'Unauthorized.'], 403);
         }
 
