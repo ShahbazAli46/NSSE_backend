@@ -18,6 +18,8 @@ use App\Http\Controllers\Api\StaffAttendanceController;
 use App\Http\Controllers\Api\PayrollController;
 use App\Http\Controllers\Api\AdvanceSalaryController;
 use App\Http\Controllers\Api\LeaveRequestController;
+use App\Http\Controllers\Api\StudentController;
+use App\Http\Controllers\Api\StudentAttendanceController;
 
 // Public Auth Routes (Rate Limited for Enterprise Security & Brute-force Protection)
 Route::get('/login', fn() => response()->json(['message' => 'Unauthenticated.'], 401))->name('login');
@@ -170,5 +172,27 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/leave-requests/my', [LeaveRequestController::class, 'myLeaves']);
     Route::post('/leave-requests/{id}/approve', [LeaveRequestController::class, 'approve']);
     Route::post('/leave-requests/{id}/reject', [LeaveRequestController::class, 'reject']);
+
+    // Students Management & Government Register Import (HR, Principal, Admin)
+    Route::get('/students', [StudentController::class, 'index']);
+    Route::get('/students/stats', [StudentController::class, 'stats']);
+    Route::get('/students/sessions', [StudentController::class, 'sessions']);
+    Route::get('/students/sections', [StudentController::class, 'getSections']);
+    Route::post('/students/sections', [StudentController::class, 'storeSection']);
+    Route::delete('/students/sections/{id}', [StudentController::class, 'destroySection']);
+    Route::post('/students/bulk-assign-section', [StudentController::class, 'bulkAssignSection']);
+    Route::post('/students/upload-chunk', [StudentController::class, 'uploadChunk']);
+    Route::get('/students/{id}', [StudentController::class, 'show']);
+
+    // Student Daily Attendance (Attendance Officer, HR, Principal, Admin, Teacher)
+    Route::get('/student-attendances/class-sheet', [StudentAttendanceController::class, 'classSheet']);
+    Route::post('/student-attendances/submit-class', [StudentAttendanceController::class, 'submitClass']);
+    Route::get('/student-attendances/daily-summary', [StudentAttendanceController::class, 'dailySummary']);
+    Route::get('/student-attendances/monthly-register', [StudentAttendanceController::class, 'monthlyRegister']);
+    Route::get('/student-attendances/teachers-list', [StudentAttendanceController::class, 'teachersList']);
+    Route::post('/student-attendances/{id}/follow-up', [StudentAttendanceController::class, 'saveFollowUp']);
+    Route::get('/student-attendances/whatsapp-template', [StudentAttendanceController::class, 'getWhatsAppTemplate']);
+    Route::post('/student-attendances/broadcast-whatsapp', [StudentAttendanceController::class, 'broadcastAbsenteeWhatsApp']);
+    Route::post('/student-attendances/{id}/send-whatsapp', [StudentAttendanceController::class, 'sendSingleAbsenteeWhatsApp']);
 });
 

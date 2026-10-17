@@ -49,7 +49,7 @@ class AdminController extends Controller
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
-            'role' => 'required|string|in:admin,super_admin,chairman,director,principal,accountant,hr_accountant,office_admin,teacher,staff,support_staff,parent,student',
+            'role' => 'required|string|in:admin,super_admin,chairman,director,principal,accountant,hr_accountant,hr,office_admin,teacher,staff,support_staff,parent,student',
         ], [
             'email.unique' => 'A user with this email already exists in the system.',
         ]);
@@ -88,7 +88,7 @@ class AdminController extends Controller
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email,' . $id,
-            'role' => 'required|string|in:admin,super_admin,chairman,director,principal,accountant,hr_accountant,office_admin,teacher,staff,support_staff,parent,student',
+            'role' => 'required|string|in:admin,super_admin,chairman,director,principal,accountant,hr_accountant,hr,office_admin,teacher,staff,support_staff,parent,student',
         ]);
 
         $user->update([
