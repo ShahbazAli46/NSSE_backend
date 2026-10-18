@@ -149,6 +149,16 @@ class DirectorEquityController extends Controller
             'bank_iban' => 'nullable|string|max:50',
         ]);
 
+        // Collective equity cap: sum of all active partners can never exceed 100%
+        $existingShare = (float) Director::where('status', 'active')->sum('share_percentage');
+        $remainingShare = round(100 - $existingShare, 2);
+        $requestedShare = (float) $request->input('share_percentage');
+        if ($requestedShare > $remainingShare) {
+            return response()->json([
+                'message' => 'Collective share cannot exceed 100%. Already allocated: ' . round($existingShare, 2) . '%. Maximum available for a new partner: ' . $remainingShare . '%.',
+            ], 422);
+        }
+
         $userId = null;
         if ($request->filled('email')) {
             $existingUser = User::where('email', $request->email)->first();
@@ -204,6 +214,18 @@ class DirectorEquityController extends Controller
             'bank_iban' => 'nullable|string|max:50',
             'status' => 'nullable|in:active,inactive',
         ]);
+
+        // Collective equity cap: an active partner's share cannot push the total above 100%
+        $nextStatus = $request->input('status', $director->status);
+        if ($nextStatus === 'active') {
+            $othersShare = (float) Director::where('status', 'active')->where('id', '!=', $director->id)->sum('share_percentage');
+            $remainingShare = round(100 - $othersShare, 2);
+            if ((float) $request->input('share_percentage') > $remainingShare) {
+                return response()->json([
+                    'message' => 'Collective share cannot exceed 100%. Other active partners hold: ' . round($othersShare, 2) . '%. Maximum share for this partner: ' . $remainingShare . '%.',
+                ], 422);
+            }
+        }
 
         $userId = $director->user_id;
         if ($request->filled('email')) {
