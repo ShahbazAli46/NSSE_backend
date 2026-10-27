@@ -42,9 +42,10 @@ class SyncBioAttendance extends Command
 
         // ---- Build the ID -> student lookup table for this batch ----
         $bioIds = $punches->pluck('bio_user_id')->unique()->values();
-        $students = Student::whereIn('bio_user_id', $bioIds)
-            ->orWhereIn('registration_no', $bioIds)
-            ->where('status', 'active')
+        $students = Student::where('status', 'active')
+            ->where(function ($query) use ($bioIds) {
+                $query->whereIn('bio_user_id', $bioIds)->orWhereIn('registration_no', $bioIds);
+            })
             ->get()
             ->keyBy(function (Student $student) {
                 // Both identities can point at the same student row.

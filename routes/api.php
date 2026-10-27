@@ -20,7 +20,7 @@ use App\Http\Controllers\Api\AdvanceSalaryController;
 use App\Http\Controllers\Api\LeaveRequestController;
 use App\Http\Controllers\Api\StudentController;
 use App\Http\Controllers\Api\StudentAttendanceController;
-
+use App\Http\Controllers\Api\BiometricDeviceController;
 // Public Auth Routes (Rate Limited for Enterprise Security & Brute-force Protection)
 Route::get('/login', fn() => response()->json(['message' => 'Unauthenticated.'], 401))->name('login');
 Route::middleware('throttle:6,1')->post('/auth/request-otp', [AuthController::class, 'requestOtp']);
@@ -193,6 +193,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/student-attendances/{id}/follow-up', [StudentAttendanceController::class, 'saveFollowUp']);
     Route::get('/student-attendances/whatsapp-template', [StudentAttendanceController::class, 'getWhatsAppTemplate']);
     Route::post('/student-attendances/broadcast-whatsapp', [StudentAttendanceController::class, 'broadcastAbsenteeWhatsApp']);
+
+    // Biometric Machines Desk (device user registry + two-way name sync)
+    Route::get('/bio-machines', [BiometricDeviceController::class, 'index']);
+    Route::get('/bio-machines/{sn}/users', [BiometricDeviceController::class, 'users']);
+    Route::post('/bio-machines/{sn}/sync-users', [BiometricDeviceController::class, 'syncUsers']);
+    Route::post('/bio-machines/{sn}/users/{pin}/name', [BiometricDeviceController::class, 'saveName']);
     Route::post('/student-attendances/{id}/send-whatsapp', [StudentAttendanceController::class, 'sendSingleAbsenteeWhatsApp']);
 });
 
