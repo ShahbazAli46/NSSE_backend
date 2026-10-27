@@ -189,6 +189,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/student-attendances/submit-class', [StudentAttendanceController::class, 'submitClass']);
     Route::get('/student-attendances/daily-summary', [StudentAttendanceController::class, 'dailySummary']);
     Route::get('/student-attendances/monthly-register', [StudentAttendanceController::class, 'monthlyRegister']);
+    Route::get('/student-attendances/daily-report-pdf', [StudentAttendanceController::class, 'dailyReportPdf']);
     Route::get('/student-attendances/teachers-list', [StudentAttendanceController::class, 'teachersList']);
     Route::post('/student-attendances/{id}/follow-up', [StudentAttendanceController::class, 'saveFollowUp']);
     Route::get('/student-attendances/whatsapp-template', [StudentAttendanceController::class, 'getWhatsAppTemplate']);

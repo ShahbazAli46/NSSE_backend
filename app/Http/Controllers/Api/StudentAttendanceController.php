@@ -12,6 +12,7 @@ use App\Jobs\SendAbsenteeWhatsAppBatchJob;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
+use Mpdf\Mpdf;
 use Exception;
 
 class StudentAttendanceController extends Controller
@@ -255,9 +256,183 @@ class StudentAttendanceController extends Controller
     /**
      * Daily School-wide Attendance Monitor & Absentee List.
      */
-    public function dailySummary(Request $request)
+    /**
+     * Branded daily attendance report (PDF) for one class sheet.
+     */
+    public function dailyReportPdf(Request $request)
     {
         $this->authorizeAccess($request);
+
+        $date = $request->input('date', Carbon::today()->format('Y-m-d'));
+        $session = $request->input('session', '2026-2027') ?: '2026-2027';
+        $class = $request->input('class', 'ECE/Nur');
+        $section = $request->input('section', 'A') ?: 'A';
+
+        $students = Student::where('session', $session)
+            ->where('class', $class)
+            ->where('section', $section)
+            ->orderBy('student_name')
+            ->get(['id', 'registration_no', 'student_name', 'father_name', 'photo_path', 'class', 'section']);
+
+        $attendances = StudentAttendance::where('date', $date)
+            ->where('session', $session)
+            ->where('class', $class)
+            ->where('section', $section)
+            ->get(['student_id', 'status', 'teacher_name', 'remarks', 'marked_at'])
+            ->keyBy('student_id');
+
+        $counts = ['present' => 0, 'late' => 0, 'absent' => 0, 'leave' => 0];
+        foreach ($attendances as $a) {
+            if (isset($counts[$a->status])) $counts[$a->status]++;
+        }
+        $unmarked = $students->count() - count($attendances);
+
+        $teacherNote = $attendances->first()?->teacher_name;
+        $logoB64 = $this->fileDataUri(resource_path('assets/nsse_logo.png'));
+        $framePath = resource_path('assets/attendance_frame.png');
+
+        $statusChip = function ($status) {
+            $map = [
+                'present' => ['E8F5EC', '14532D', 'Present'],
+                'late'    => ['FFF7E0', '8A6D1A', 'Late'],
+                'absent'  => ['FDE8E8', 'B91C1C', 'Absent'],
+                'leave'   => ['E8F0FE', '1D4ED8', 'Leave'],
+            ];
+            [$bg, $fg, $label] = $map[$status] ?: ['F3F4F6', '6B7280', '—'];
+            return '<span style="display:inline-block;padding:1.5mm 3.5mm;border-radius:3mm;background-color:#' . $bg . ';color:#' . $fg . ';font-weight:bold;font-size:8.5pt;">' . $label . '</span>';
+        };
+
+        $photoCell = function ($student) {
+            if ($student->photo_path) {
+                $uri = $this->fileDataUri(storage_path('app/public/' . $student->photo_path));
+                if ($uri) {
+                    return '<img src="' . $uri . '" width="34" height="40" style="object-fit:cover;border:1px solid #CFE3D6;" />';
+                }
+            }
+            return '<div style="width:34px;height:40px;background-color:#EDF5F0;border:1px solid #CFE3D6;border-radius:6px;color:#9AB5A5;text-align:center;line-height:40px;font-size:6pt;">NO PHOTO</div>';
+        };
+
+        $rows = '';
+        $n = 0;
+        foreach ($students as $student) {
+            $n++;
+            $att = $attendances->get($student->id);
+            $status = $att->status ?? 'present';
+            $remarks = $att?->remarks ?: '';
+            $markedAt = $att?->marked_at ? Carbon::parse($att->marked_at)->format('H:i') : '';
+            $rows .= '<tr>
+                <td style="text-align:center;color:#6B7280;font-size:9pt;">' . $n . '</td>
+                <td style="text-align:center;">' . $photoCell($student) . '</td>
+                <td style="font-size:8.5pt;color:#374151;font-family:monospace;">' . e($student->registration_no) . '</td>
+                <td style="font-weight:bold;color:#1A2520;font-size:9.5pt;">' . e($student->student_name) . '</td>
+                <td style="font-size:8.5pt;color:#6B7280;">' . e($student->father_name ?: '—') . '</td>
+                <td style="font-size:8pt;color:#374151;">' . e($remarks ?: '—') . ($markedAt ? ' <span style="color:#9CA3AF;">' . $markedAt . '</span>' : '') . '</td>
+                <td style="text-align:center;">' . $statusChip($status) . '</td>
+            </tr>';
+        }
+
+        $dateHuman = Carbon::parse($date)->format('l, d F Y');
+        $generatedAt = Carbon::now()->format('d M Y, g:ia');
+        $teacherNoteDisplay = $teacherNote ?: '—';
+
+        $html = <<<HTML
+<style>
+    body { font-family: helvetica; }
+    table.roster { width:100%; border-collapse:collapse; }
+    table.roster th { background-color:#14532D; color:#FFFFFF; font-size:8pt; text-transform:uppercase;
+        padding:3mm 2mm; letter-spacing:0.4pt; }
+    table.roster td { border:0.7px solid #CFE3D6; padding:2mm 2.5mm; vertical-align:middle; }
+    tr.z0 { background-color:#FFFFFF; }
+    tr.z1 { background-color:#F4FAF6; }
+</style>
+
+<table style="width:100%; background-color:#14532D; color:#FFFFFF; border-radius:5mm 5mm 0 0; margin-bottom:0;">
+<tr>
+    <td style="width:22mm; padding:4mm 3mm 4mm 4mm;">
+        <img src="{$logoB64}" width="58" height="58" />
+    </td>
+    <td style="padding:4mm 3mm;">
+        <div style="font-size:7.5pt; letter-spacing:1.6pt; color:#BFE3CB; font-weight:bold;">NAWAZ SHARIF SCHOOL OF EMINENCE</div>
+        <div style="font-size:16.5pt; font-weight:bold; margin-top:1mm;">Daily Attendance Report</div>
+        <div style="font-size:9.5pt; color:#D9EFDF; margin-top:0.5mm;">{$dateHuman}</div>
+    </td>
+    <td style="padding:4mm; text-align:right;">
+        <div style="font-size:8pt; color:#BFE3CB; letter-spacing:1pt; font-weight:bold;">{$class} · SECTION {$section}</div>
+        <div style="font-size:8pt; color:#BFE3CB;">Session {$session}</div>
+    </td>
+</tr>
+</table>
+
+<table style="width:100%; border:0.7px solid #CFE3D6; border-collapse:collapse; background-color:#F4FAF6; margin-bottom:4mm;">
+<tr>
+    <td style="padding:3mm 4mm; font-size:9pt;">
+        <b style="color:#14532D;">{$counts['present']}</b> Present &nbsp;·&nbsp;
+        <b style="color:#8A6D1A;">{$counts['late']}</b> Late &nbsp;·&nbsp;
+        <b style="color:#B91C1C;">{$counts['absent']}</b> Absent &nbsp;·&nbsp;
+        <b style="color:#1D4ED8;">{$counts['leave']}</b> Leave &nbsp;·&nbsp;
+        <i style="color:#6B7280;">{$unmarked} not in roster</i>
+    </td>
+    <td style="padding:3mm 4mm; text-align:right; font-size:8.5pt; color:#6B7280;">
+        Marked by: <b style="color:#374151;">{$teacherNoteDisplay}</b>
+    </td>
+</tr>
+</table>
+
+<table class="roster">
+<tr>
+    <th style="width:8mm;">#</th>
+    <th style="width:15mm;">Photo</th>
+    <th style="width:26mm;">Reg. No</th>
+    <th style="text-align:left;">Student Name</th>
+    <th style="text-align:left;">Father</th>
+    <th style="text-align:left;">Remarks</th>
+    <th style="width:24mm;">Status</th>
+</tr>
+{$rows}
+</table>
+
+<div style="margin-top:4mm; text-align:center; color:#9CA3AF; font-size:8pt;">
+    Generated by NSSE Portal · Bio attendance system · {$generatedAt}
+</div>
+HTML;
+
+        $mpdf = new Mpdf([
+            'mode' => 'utf-8',
+            'format' => 'A4',
+            'margin_left' => 15,
+            'margin_right' => 15,
+            'margin_top' => 12,
+            'margin_bottom' => 14,
+            'margin_header' => 0,
+            'margin_footer' => 8,
+            'tempDir' => sys_get_temp_dir(),
+        ]);
+
+        if (is_file($framePath)) {
+            $mpdf->SetWatermarkImage($framePath, 1.0, [210, 297]);
+            $mpdf->showWatermarkImage = true;
+        }
+
+        $mpdf->SetFooter('NSSE Portal — Daily Attendance Report||{PAGENO} of {nbpg}');
+        $mpdf->WriteHTML($html);
+
+        $fileName = 'attendance_' . str_replace(['(', ')', ' '], '_', $class) . '_' . $section . '_' . $date . '.pdf';
+        return response($mpdf->Output($fileName, 'S'), 200)
+            ->header('Content-Type', 'application/pdf')
+            ->header('Content-Disposition', 'attachment; filename="' . $fileName . '"');
+    }
+
+    private function fileDataUri(string $path): ?string
+    {
+        if (!is_file($path)) return null;
+        $content = @file_get_contents($path);
+        if ($content === false) return null;
+        $mime = @mime_content_type($path) ?: 'image/png';
+        return 'data:' . $mime . ';base64,' . base64_encode($content);
+    }
+
+    public function dailySummary(Request $request)
+    {        $this->authorizeAccess($request);
 
         $date = $request->input('date', Carbon::today()->format('Y-m-d'));
         $session = $request->input('session', '2026-2027') ?: '2026-2027';
