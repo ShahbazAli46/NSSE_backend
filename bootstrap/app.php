@@ -16,6 +16,9 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->prepend(QueryTokenAuth::class);
+        // ZKTeco hardware POSTs raw plaintext to /iclock/* with no Laravel
+        // session — the CSRF verification would 419 every device batch.
+        $middleware->validateCsrfTokens(except: ['iclock/*']);
         $middleware->alias([
             'role' => \App\Http\Middleware\EnsureRole::class,
         ]);

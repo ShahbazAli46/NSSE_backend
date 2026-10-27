@@ -19,6 +19,7 @@ class Student extends Model
         'class',
         'session',
         'section',
+        'bio_user_id',
         'gender',
         'admission_date',
         'mobile_no',
