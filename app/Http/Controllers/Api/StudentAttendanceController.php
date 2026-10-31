@@ -451,10 +451,10 @@ class StudentAttendanceController extends Controller
 <table class="summary">
     <tr>
         <td class="total">TOTAL</td>
-        <td class="count present">' . $counts['present'] . '</td>
-        <td class="count late">' . $counts['late'] . '</td>
-        <td class="count absent">' . $counts['absent'] . '</td>
-        <td class="count leave">' . $counts['leave'] . '</td>
+        <td class="count present">{$counts['present']}</td>
+        <td class="count late">{$counts['late']}</td>
+        <td class="count absent">{$counts['absent']}</td>
+        <td class="count leave">{$counts['leave']}</td>
     </tr>
     <tr>
         <td></td>
