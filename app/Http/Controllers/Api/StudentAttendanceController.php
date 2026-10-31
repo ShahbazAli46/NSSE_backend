@@ -328,14 +328,13 @@ class StudentAttendanceController extends Controller
         $unmarked = 0;
         foreach ($students as $student) {
             $att = $attendances->get($student->id);
-            $status = $att->status ?? 'absent';
+            $status = $att?->status ?? 'absent';
             if (isset($counts[$status])) $counts[$status]++;
             if (!$att) $unmarked++;
         }
 
         $teacherNote = $attendances->first()?->teacher_name;
         $logoB64 = $this->fileDataUri(resource_path('assets/nsse_logo.png'));
-        $framePath = resource_path('assets/attendance_frame.png');
 
         $statusChip = function ($status) {
             $map = [
@@ -363,7 +362,7 @@ class StudentAttendanceController extends Controller
         foreach ($students as $student) {
             $n++;
             $att = $attendances->get($student->id);
-            $status = $att->status ?? 'absent';
+            $status = $att?->status ?? 'absent';
             $remarks = $att?->remarks ?: '';
             $markedAt = $att?->marked_at ? Carbon::parse($att->marked_at)->format('H:i') : '';
             $rows .= '<tr>
