@@ -478,12 +478,10 @@ HTML;
 
         $framePath = resource_path('assets/attendance_frame.png');
         $frameData = $this->fileDataUri($framePath, 1240, 1754, true);
-        if ($frameData) {
-            $mpdf->SetWatermarkImage($frameData, 1.0, [210, 297]);
-            $mpdf->showWatermarkImage = true;
-        }
+        $frameBg = $frameData ? 'background-image: url("' . $frameData . '"); background-size: 210mm 297mm; background-repeat: no-repeat;' : '';
 
         $mpdf->SetFooter('NSSE Portal — Daily Attendance Report||{PAGENO} of {nbpg}');
+        $html = '<div style="' . $frameBg . ' width: 210mm; min-height: 297mm; position: relative;">' . $html . '</div>';
         $mpdf->WriteHTML($html);
 
         $fileName = 'attendance_' . str_replace(['(', ')', ' '], '_', $class) . '_' . $section . '_' . $date . '.pdf';
