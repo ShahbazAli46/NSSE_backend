@@ -380,6 +380,9 @@ class StudentAttendanceController extends Controller
         $teacherNoteDisplay = $teacherNote ?: '—';
         $studentCount = $students->count();
 
+        // Build dynamic HTML pieces outside heredoc to avoid base64 text leakage
+        $logoHtml = $logoB64 ? '<img src="' . $logoB64 . '" width="36" height="36" style="margin-right:3mm; vertical-align:middle;" />' : '';
+
         $html = <<<HTML
 <style>
     @page { margin: 12mm 14mm 14mm 14mm; }
@@ -416,13 +419,13 @@ class StudentAttendanceController extends Controller
 
 <div class="header">
     <div class="header-left">
-        ' . ($logoB64 ? '<img src="' . $logoB64 . '" width="36" height="36" style="margin-right:3mm; vertical-align:middle;" />' : '') . '
+        {$logoHtml}
         <p class="school-name">NAWAZ SHARIF SCHOOL OF EMINENCE</p>
         <p class="school-sub">Chunian Campus · Official Attendance Register</p>
     </div>
     <div class="header-right">
         <p class="report-title">Daily Attendance Report</p>
-        <p class="report-sub">' . $dateHuman . '</p>
+        <p class="report-sub">{$dateHuman}</p>
     </div>
     <div class="clear"></div>
 </div>
@@ -430,21 +433,21 @@ class StudentAttendanceController extends Controller
 <table class="info-table">
     <tr>
         <td class="label">Date</td>
-        <td class="value">' . $dateHuman . '</td>
+        <td class="value">{$dateHuman}</td>
         <td class="label">Class</td>
-        <td class="value">' . $class . '</td>
+        <td class="value">{$class}</td>
         <td class="label">Section</td>
-        <td class="value">' . $section . '</td>
+        <td class="value">{$section}</td>
         <td class="label">Session</td>
-        <td class="value">' . $session . '</td>
+        <td class="value">{$session}</td>
     </tr>
     <tr>
         <td class="label">Marked By</td>
-        <td class="value">' . $teacherNoteDisplay . '</td>
+        <td class="value">{$teacherNoteDisplay}</td>
         <td class="label">Total Students</td>
-        <td class="value">' . $studentCount . '</td>
+        <td class="value">{$studentCount}</td>
         <td class="label">Generated</td>
-        <td class="value" colspan="2">' . $generatedAt . '</td>
+        <td class="value" colspan="2">{$generatedAt}</td>
     </tr>
 </table>
 
