@@ -200,6 +200,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/bio-machines/{sn}/users', [BiometricDeviceController::class, 'users']);
     Route::post('/bio-machines/{sn}/sync-users', [BiometricDeviceController::class, 'syncUsers']);
     Route::post('/bio-machines/{sn}/users/{pin}/name', [BiometricDeviceController::class, 'saveName']);
+    Route::post('/bio-machines/{sn}/users/{pin}/update-info', [BiometricDeviceController::class, 'updateInfo']);
     Route::post('/student-attendances/{id}/send-whatsapp', [StudentAttendanceController::class, 'sendSingleAbsenteeWhatsApp']);
 });
 

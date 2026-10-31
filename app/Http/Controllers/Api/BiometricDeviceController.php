@@ -10,9 +10,9 @@ use Illuminate\Support\Facades\DB;
  * Admin API for the biometric machine management desk.
  *
  * Powers the "Bio Machines" page: per-machine enrolled user registry
- * (fetched from devices via the ADMS "DATA UPDATE USERS" command),
+ * (fetched from devices via the ADMS "DATA QUERY USERINFO" command),
  * student matching, and two-way name synchronization
- * (app -> database + device via the UPDATE USERINFO command).
+ * (app -> database + device via the DATA UPDATE USERINFO command).
  */
 class BiometricDeviceController extends Controller
 {
@@ -117,6 +117,7 @@ class BiometricDeviceController extends Controller
                 return [
                     'device_user_id' => $user->device_user_id,
                     'device_name' => $user->device_name,
+                    'pending_name' => $user->pending_name,
                     'name_sync_status' => $user->name_sync_status,
                     'card_no' => $user->card_no,
                     'privilege' => (int) $user->privilege,
@@ -134,7 +135,7 @@ class BiometricDeviceController extends Controller
     }
 
     /**
-     * Queue the DATA UPDATE USERS command — the machine uploads its full
+     * Queue the DATA QUERY USERINFO command — the machine uploads its full
      * enrolled-user registry on its next poll (usually within seconds).
      */
     public function syncUsers(Request $request, string $sn)
@@ -144,7 +145,7 @@ class BiometricDeviceController extends Controller
         $inFlight = DB::table('bio_device_commands')
             ->where('machine_sn', $sn)
             ->whereIn('status', ['queued', 'sent'])
-            ->where('command', 'DATA UPDATE USERS')
+            ->where('command', 'DATA QUERY USERINFO')
             ->exists();
 
         if ($inFlight) {
@@ -153,7 +154,7 @@ class BiometricDeviceController extends Controller
 
         DB::table('bio_device_commands')->insert([
             'machine_sn' => $sn,
-            'command' => 'DATA UPDATE USERS',
+            'command' => 'DATA QUERY USERINFO',
             'status' => 'queued',
             'created_at' => now(),
             'updated_at' => now(),
@@ -196,37 +197,155 @@ class BiometricDeviceController extends Controller
             })
             ->first();
 
-        $updatedStudent = false;
-        if ($student) {
-            DB::table('students')->where('id', $student->id)->update([
-                'student_name' => $name,
+        $updatedStudent = DB::transaction(function () use ($student, $deviceUser, $sn, $pin, $name) {
+            if ($student) {
+                DB::table('students')->where('id', $student->id)->update([
+                    'student_name' => $name,
+                    'updated_at' => now(),
+                ]);
+            }
+
+            DB::table('bio_device_users')
+                ->where('id', $deviceUser->id)
+                ->update([
+                    'pending_name' => $name,
+                    'name_sync_status' => 'pending',
+                    'updated_at' => now(),
+                ]);
+
+            // Push-channel attribute format; tabs separate attributes.
+            DB::table('bio_device_commands')->insert([
+                'machine_sn' => $sn,
+                'command' => 'DATA UPDATE USERINFO PIN=' . $pin . "\tName=" . $name,
+                'status' => 'queued',
+                'created_at' => now(),
                 'updated_at' => now(),
             ]);
-            $updatedStudent = true;
-        }
 
-        DB::table('bio_device_users')
-            ->where('id', $deviceUser->id)
-            ->update([
-                'pending_name' => $name,
-                'name_sync_status' => 'pending',
-                'updated_at' => now(),
-            ]);
-
-        // Push-channel attribute format; tabs separate attributes.
-        DB::table('bio_device_commands')->insert([
-            'machine_sn' => $sn,
-            'command' => 'UPDATE USERINFO PIN=' . $pin . "\tName=" . $name,
-            'status' => 'queued',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+            return $student !== null;
+        });
 
         return response()->json([
             'message' => 'Name saved. Database updated'
                 . ($updatedStudent ? ' (student record too)' : ' (device-only entry)')
                 . ' — machine applies it on its next poll.',
             'student_updated' => $updatedStudent,
+        ]);
+    }
+
+    /**
+     * Update full student info: database first, device name second.
+     *
+     * - Updates students table: student_name, class, section, nsse_ref, bio_user_id
+     * - Updates bio_device_users device_name
+     * - Queues UPDATE USERINFO command to push name to machine
+     */
+    public function updateInfo(Request $request, string $sn, string $pin)
+    {
+        $this->authorizeAccess($request);
+
+        $data = $request->validate([
+            'student_name' => ['required', 'string', 'max:100'],
+            'class' => ['nullable', 'string', 'max:50'],
+            'section' => ['nullable', 'string', 'max:20'],
+            'nsse_ref' => ['nullable', 'string', 'max:50'],
+            'bio_user_id' => ['nullable', 'string', 'max:50'],
+        ]);
+
+        $deviceUser = DB::table('bio_device_users')
+            ->where('machine_sn', $sn)
+            ->where('device_user_id', $pin)
+            ->first();
+
+        if (!$deviceUser) {
+            return response()->json(['message' => 'This device user no longer exists. Re-pull the user list.'], 404);
+        }
+
+        $name = trim($data['student_name']);
+
+        // Find existing student by bio_user_id or registration_no matching this pin
+        $student = DB::table('students')
+            ->where('status', 'active')
+            ->where(function ($q) use ($pin) {
+                $q->where('bio_user_id', $pin)->orWhere('registration_no', $pin);
+            })
+            ->first();
+
+        $studentUpdated = false;
+        $studentId = null;
+
+        DB::transaction(function () use ($student, $deviceUser, $sn, $pin, $name, $data, &$studentUpdated, &$studentId) {
+            if ($student) {
+                $updateData = [
+                    'student_name' => $name,
+                    'updated_at' => now(),
+                ];
+                if (isset($data['class'])) {
+                    $updateData['class'] = $data['class'];
+                }
+                if (isset($data['section'])) {
+                    $updateData['section'] = $data['section'];
+                }
+                if (isset($data['nsse_ref'])) {
+                    $updateData['nsse_ref'] = $data['nsse_ref'];
+                }
+                if (isset($data['bio_user_id'])) {
+                    $updateData['bio_user_id'] = $data['bio_user_id'];
+                }
+
+                DB::table('students')->where('id', $student->id)->update($updateData);
+                $studentUpdated = true;
+                $studentId = $student->id;
+            } else {
+                // No existing student matched by pin; create a new one using the pin as registration_no
+                $existingReg = DB::table('students')->where('registration_no', $pin)->first();
+                if ($existingReg) {
+                    throw new \Illuminate\Http\Exceptions\HttpResponseException(
+                        response()->json([
+                            'message' => 'A student with registration_no "' . $pin . '" already exists. Map this device user to that student instead.',
+                        ], 409)
+                    );
+                }
+
+                $newId = DB::table('students')->insertGetId([
+                    'registration_no' => $pin,
+                    'student_name' => $name,
+                    'class' => $data['class'] ?? null,
+                    'section' => $data['section'] ?? 'A',
+                    'nsse_ref' => $data['nsse_ref'] ?? null,
+                    'bio_user_id' => $data['bio_user_id'] ?? $pin,
+                    'status' => 'active',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                $studentUpdated = true;
+                $studentId = $newId;
+            }
+
+            // Update device user registry
+            DB::table('bio_device_users')
+                ->where('id', $deviceUser->id)
+                ->update([
+                    'device_name' => $name,
+                    'pending_name' => $name,
+                    'name_sync_status' => 'pending',
+                    'updated_at' => now(),
+                ]);
+
+            // Queue command to push name to machine
+            DB::table('bio_device_commands')->insert([
+                'machine_sn' => $sn,
+                'command' => 'DATA UPDATE USERINFO PIN=' . $pin . "\tName=" . $name,
+                'status' => 'queued',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        });
+
+        return response()->json([
+            'message' => 'Student info updated. Name queued for sync to machine.',
+            'student_updated' => $studentUpdated,
+            'student_id' => $studentId,
         ]);
     }
 }
