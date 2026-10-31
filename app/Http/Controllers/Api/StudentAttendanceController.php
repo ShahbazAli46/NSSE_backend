@@ -476,12 +476,6 @@ HTML;
             'tempDir' => sys_get_temp_dir(),
         ]);
 
-        $frameData = $this->fileDataUri($framePath, 1240, 1754, true);
-        if ($frameData) {
-            $mpdf->SetWatermarkImage($frameData, 1.0, [210, 297]);
-            $mpdf->showWatermarkImage = true;
-        }
-
         $mpdf->SetFooter('NSSE Portal — Daily Attendance Report||{PAGENO} of {nbpg}');
         $mpdf->WriteHTML($html);
 
