@@ -336,25 +336,24 @@ class StudentAttendanceController extends Controller
         $teacherNote = $attendances->first()?->teacher_name;
         $logoB64 = $this->fileDataUri(resource_path('assets/nsse_logo.png'));
 
-        $statusChip = function ($status) {
+        $statusLabel = function ($status) {
             $map = [
-                'present' => ['E8F5EC', '14532D', 'Present'],
-                'late'    => ['FFF7E0', '8A6D1A', 'Late'],
-                'absent'  => ['FDE8E8', 'B91C1C', 'Absent'],
-                'leave'   => ['E8F0FE', '1D4ED8', 'Leave'],
+                'present' => 'Present',
+                'late'    => 'Late',
+                'absent'  => 'Absent',
+                'leave'   => 'Leave',
             ];
-            [$bg, $fg, $label] = $map[$status] ?? ['F3F4F6', '6B7280', '—'];
-            return '<span style="display:inline-block;padding:1.5mm 3.5mm;border-radius:3mm;background-color:#' . $bg . ';color:#' . $fg . ';font-weight:bold;font-size:8.5pt;">' . $label . '</span>';
+            return $map[$status] ?? '—';
         };
 
         $photoCell = function ($student) {
             if ($student->photo_path) {
                 $uri = $this->fileDataUri(storage_path('app/public/' . $student->photo_path), 80, 96, true);
                 if ($uri) {
-                    return '<img src="' . $uri . '" width="34" height="40" style="object-fit:cover;border:1px solid #CFE3D6;" />';
+                    return '<img src="' . $uri . '" width="34" height="40" style="object-fit:cover;border:1px solid #9CA3AF;" />';
                 }
             }
-            return '<div style="width:34px;height:40px;background-color:#EDF5F0;border:1px solid #CFE3D6;border-radius:6px;color:#9AB5A5;text-align:center;line-height:40px;font-size:6pt;">NO PHOTO</div>';
+            return '<div style="width:34px;height:40px;background-color:#F3F4F6;border:1px solid #D1D5DB;border-radius:4px;color:#9CA3AF;text-align:center;line-height:40px;font-size:6pt;">NO PHOTO</div>';
         };
 
         $rows = '';
@@ -366,13 +365,13 @@ class StudentAttendanceController extends Controller
             $remarks = $att?->remarks ?: '';
             $markedAt = $att?->marked_at ? Carbon::parse($att->marked_at)->format('H:i') : '';
             $rows .= '<tr>
-                <td style="text-align:center;color:#6B7280;font-size:9pt;">' . $n . '</td>
+                <td style="text-align:center;color:#6B7280;font-size:8.5pt;">' . $n . '</td>
                 <td style="text-align:center;">' . $photoCell($student) . '</td>
-                <td style="font-size:8.5pt;color:#374151;font-family:monospace;">' . e($student->registration_no) . '</td>
-                <td style="font-weight:bold;color:#1A2520;font-size:9.5pt;">' . e($student->student_name) . '</td>
-                <td style="font-size:8.5pt;color:#6B7280;">' . e($student->father_name ?: '—') . '</td>
-                <td style="font-size:8pt;color:#374151;">' . e($remarks ?: '—') . ($markedAt ? ' <span style="color:#9CA3AF;">' . $markedAt . '</span>' : '') . '</td>
-                <td style="text-align:center;">' . $statusChip($status) . '</td>
+                <td style="font-size:8pt;color:#374151;font-family:monospace;">' . e($student->registration_no) . '</td>
+                <td style="font-weight:bold;color:#111827;font-size:9pt;">' . e($student->student_name) . '</td>
+                <td style="font-size:8pt;color:#6B7280;">' . e($student->father_name ?: '—') . '</td>
+                <td style="font-size:8pt;color:#374151;">' . e($remarks ?: '—') . ($markedAt ? ' <span style="color:#6B7280;">' . $markedAt . '</span>' : '') . '</td>
+                <td style="text-align:center;font-size:8pt;font-weight:bold;color:' . ($status === 'present' ? '#166534' : ($status === 'late' ? '#92400e' : ($status === 'leave' ? '#1e40af' : '#7f1d1d'))) . ';">' . $statusLabel($status) . '</td>
             </tr>';
         }
 
@@ -383,84 +382,108 @@ class StudentAttendanceController extends Controller
 
         $html = <<<HTML
 <style>
-    body { font-family: helvetica; color:#24332A; }
-    table.roster { width:100%; border-collapse:collapse; }
+    @page { margin: 12mm 14mm 14mm 14mm; }
+    body { font-family: 'Helvetica', 'Arial', sans-serif; color:#111827; font-size:8.5pt; line-height:1.3; margin:0; padding:0; }
+    .header { width:100%; border-bottom:2px solid #111827; padding-bottom:3mm; margin-bottom:4mm; }
+    .header-left { float:left; }
+    .header-right { float:right; text-align:right; }
+    .school-name { font-size:14pt; font-weight:bold; color:#111827; letter-spacing:0.4pt; margin:0; }
+    .school-sub { font-size:7.5pt; color:#6B7280; text-transform:uppercase; letter-spacing:0.8pt; margin:0; }
+    .report-title { font-size:12pt; font-weight:bold; color:#111827; margin:0; }
+    .report-sub { font-size:7pt; color:#6B7280; margin:0; }
+    .clear { clear:both; }
+    .info-table { width:100%; border-collapse:collapse; margin-bottom:3mm; }
+    .info-table td { border:0.5px solid #D1D5DB; padding:1.3mm 2mm; font-size:7.5pt; }
+    .info-table td.label { background-color:#F3F4F6; font-weight:bold; color:#374151; width:16%; }
+    .info-table td.value { color:#111827; }
+    .summary { width:100%; border-collapse:collapse; margin-bottom:3mm; }
+    .summary td { border:0.5px solid #D1D5DB; padding:1.5mm 2mm; font-size:7.5pt; text-align:center; }
+    .summary td.total { background-color:#111827; color:#FFFFFF; font-weight:bold; }
+    .summary td.count { font-weight:bold; font-size:8pt; }
+    .summary td.present { color:#166534; }
+    .summary td.late { color:#92400e; }
+    .summary td.absent { color:#7f1d1d; }
+    .summary td.leave { color:#1e40af; }
+    table.roster { width:100%; border-collapse:collapse; margin-bottom:2mm; }
     table.roster thead { display:table-header-group; }
-    table.roster th { background-color:#164E35; color:#FFFFFF; font-size:7.5pt; text-transform:uppercase;
-        padding:3mm 2mm; letter-spacing:0.55pt; border-bottom:2px solid #A8D5B5; }
-    table.roster td { border-bottom:0.7px solid #DDEBE1; padding:2.2mm 2.5mm; vertical-align:middle; }
-    table.roster tr:nth-child(even) td { background-color:#F7FBF8; }
+    table.roster th { background-color:#111827; color:#FFFFFF; font-size:6.5pt; text-transform:uppercase; letter-spacing:0.3pt; padding:1.5mm 1mm; border:0.5px solid #111827; text-align:left; }
+    table.roster th.center { text-align:center; }
+    table.roster td { border:0.5px solid #D1D5DB; padding:1.5mm 1mm; vertical-align:middle; font-size:7.5pt; }
+    table.roster tr:nth-child(even) td { background-color:#F9FAFB; }
     table.roster tr { page-break-inside:avoid; }
-    .metric { border:0.7px solid #D8E9DD; background-color:#FFFFFF; padding:2.5mm 3mm; }
-    .metric-label { color:#718078; font-size:7pt; text-transform:uppercase; letter-spacing:0.45pt; }
-    .metric-value { font-size:16pt; font-weight:bold; line-height:1.1; }
+    .footer { margin-top:4mm; border-top:0.5px solid #D1D5DB; padding-top:1.5mm; font-size:6.5pt; color:#6B7280; text-align:center; }
 </style>
 
-<table style="width:100%; background-color:#164E35; color:#FFFFFF; border-radius:4mm 4mm 0 0; margin-bottom:0;">
-<tr>
-    <td style="width:22mm; padding:4.5mm 3mm 4.5mm 4mm;">
-        <img src="{$logoB64}" width="54" height="54" />
-    </td>
-    <td style="padding:4.5mm 3mm;">
-        <div style="font-size:7pt; letter-spacing:1.55pt; color:#BFE3CB; font-weight:bold;">NAWAZ SHARIF SCHOOL OF EMINENCE</div>
-        <div style="font-size:17pt; font-weight:bold; margin-top:1.2mm;">Daily Attendance</div>
-        <div style="font-size:9pt; color:#D9EFDF; margin-top:1mm;">Class register · {$dateHuman}</div>
-    </td>
-    <td style="padding:4.5mm; text-align:right;">
-        <div style="font-size:8pt; color:#FFFFFF; letter-spacing:0.7pt; font-weight:bold;">{$class} · SECTION {$section}</div>
-        <div style="font-size:8pt; color:#BFE3CB; margin-top:1mm;">SESSION {$session}</div>
-    </td>
-</tr>
+<div class="header">
+    <div class="header-left">
+        ' . ($logoB64 ? '<img src="' . $logoB64 . '" width="36" height="36" style="margin-right:3mm; vertical-align:middle;" />' : '') . '
+        <p class="school-name">NAWAZ SHARIF SCHOOL OF EMINENCE</p>
+        <p class="school-sub">Chunian Campus · Official Attendance Register</p>
+    </div>
+    <div class="header-right">
+        <p class="report-title">Daily Attendance Report</p>
+        <p class="report-sub">' . $dateHuman . '</p>
+    </div>
+    <div class="clear"></div>
+</div>
+
+<table class="info-table">
+    <tr>
+        <td class="label">Date</td>
+        <td class="value">' . $dateHuman . '</td>
+        <td class="label">Class</td>
+        <td class="value">' . $class . '</td>
+        <td class="label">Section</td>
+        <td class="value">' . $section . '</td>
+        <td class="label">Session</td>
+        <td class="value">' . $session . '</td>
+    </tr>
+    <tr>
+        <td class="label">Marked By</td>
+        <td class="value">' . $teacherNoteDisplay . '</td>
+        <td class="label">Total Students</td>
+        <td class="value">' . $studentCount . '</td>
+        <td class="label">Generated</td>
+        <td class="value" colspan="2">' . $generatedAt . '</td>
+    </tr>
 </table>
 
-<table style="width:100%; border:0.7px solid #D8E9DD; border-collapse:separate; border-spacing:2mm; background-color:#F1F8F3; margin-bottom:3mm;">
-<tr>
-    <td class="metric" style="width:25%;">
-        <div class="metric-label">Present</div>
-        <div class="metric-value" style="color:#167044;">{$counts['present']}</div>
-    </td>
-    <td class="metric" style="width:25%;">
-        <div class="metric-label">Late</div>
-        <div class="metric-value" style="color:#A06A09;">{$counts['late']}</div>
-    </td>
-    <td class="metric" style="width:25%;">
-        <div class="metric-label">Absent</div>
-        <div class="metric-value" style="color:#B42318;">{$counts['absent']}</div>
-    </td>
-    <td class="metric" style="width:25%;">
-        <div class="metric-label">Leave</div>
-        <div class="metric-value" style="color:#2459A6;">{$counts['leave']}</div>
-    </td>
-</tr>
-</table>
-
-<table style="width:100%; border-collapse:collapse; margin-bottom:4mm;">
-<tr>
-    <td style="padding:2.5mm 3mm; background-color:#F7FBF8; border-left:2px solid #5CA875; font-size:8.5pt; color:#66756C;">
-        <span style="color:#164E35; font-weight:bold;">{$studentCount} students</span>
-        &nbsp;·&nbsp; {$unmarked} without saved attendance
-    </td>
-    <td style="padding:2.5mm 3mm; background-color:#F7FBF8; text-align:right; font-size:8.5pt; color:#66756C;">
-        Marked by: <b style="color:#24332A;">{$teacherNoteDisplay}</b>
-    </td>
-</tr>
+<table class="summary">
+    <tr>
+        <td class="total">TOTAL</td>
+        <td class="count present">' . $counts['present'] . '</td>
+        <td class="count late">' . $counts['late'] . '</td>
+        <td class="count absent">' . $counts['absent'] . '</td>
+        <td class="count leave">' . $counts['leave'] . '</td>
+    </tr>
+    <tr>
+        <td></td>
+        <td style="font-size:6.5pt;color:#6B7280;">Present</td>
+        <td style="font-size:6.5pt;color:#6B7280;">Late</td>
+        <td style="font-size:6.5pt;color:#6B7280;">Absent</td>
+        <td style="font-size:6.5pt;color:#6B7280;">Leave</td>
+    </tr>
 </table>
 
 <table class="roster">
+<thead>
 <tr>
-    <th style="width:8mm;">#</th>
-    <th style="width:15mm;">Photo</th>
-    <th style="width:26mm;">Reg. No</th>
-    <th style="text-align:left;">Student Name</th>
-    <th style="text-align:left;">Father</th>
-    <th style="text-align:left;">Remarks</th>
-    <th style="width:24mm;">Status</th>
+    <th style="width:5mm;" class="center">#</th>
+    <th style="width:12mm;" class="center">Photo</th>
+    <th style="width:18mm;">Reg. No</th>
+    <th>Student Name</th>
+    <th style="width:22mm;">Father Name</th>
+    <th style="width:18mm;">Time</th>
+    <th style="width:15mm;">Status</th>
 </tr>
-{$rows}
+</thead>
+<tbody>
+' . $rows . '
+</tbody>
 </table>
 
-<div style="margin-top:4mm; text-align:center; color:#9CA3AF; font-size:8pt;">
-    Generated by NSSE Portal · Bio attendance system · {$generatedAt}
+<div class="footer">
+    Generated by NSSE Portal · Bio Attendance System · ' . $generatedAt . ' &nbsp;|&nbsp; Page {PAGENO} of {nbpg}
 </div>
 HTML;
 
@@ -474,14 +497,12 @@ HTML;
             'margin_header' => 0,
             'margin_footer' => 8,
             'tempDir' => sys_get_temp_dir(),
+            'setHTMLHeader' => true,
         ]);
 
-        $framePath = resource_path('assets/attendance_frame.png');
-        $frameData = $this->fileDataUri($framePath, 1240, 1754, true);
-        $frameBg = $frameData ? 'background-image: url("' . $frameData . '"); background-size: 210mm 297mm; background-repeat: no-repeat;' : '';
-
-        $mpdf->SetFooter('NSSE Portal — Daily Attendance Report||{PAGENO} of {nbpg}');
-        $html = '<div style="' . $frameBg . ' width: 210mm; min-height: 297mm; position: relative;">' . $html . '</div>';
+        $mpdf->SetHTMLFooter('<div style="border-top:0.5px solid #D1D5DB; padding-top:1.5mm; font-size:6.5pt; color:#6B7280; text-align:center; width:100%;">
+            Generated by NSSE Portal · Bio Attendance System · ' . $generatedAt . ' &nbsp;|&nbsp; Page {PAGENO} of {nbpg}
+        </div>');
         $mpdf->WriteHTML($html);
 
         $fileName = 'attendance_' . str_replace(['(', ')', ' '], '_', $class) . '_' . $section . '_' . $date . '.pdf';
