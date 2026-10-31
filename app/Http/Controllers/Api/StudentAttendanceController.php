@@ -37,7 +37,7 @@ class StudentAttendanceController extends Controller
     {
         $this->authorizeAccess($request);
 
-        $date = $request->input('date', Carbon::today()->format('Y-m-d'));
+        $date = $request->input('date', Carbon::today('Asia/Karachi')->format('Y-m-d'));
         $session = $request->input('session', '2026-2027') ?: '2026-2027';
         $class = $request->input('class', 'ECE/Nur');
         $section = $request->input('section', 'A') ?: 'A';
@@ -82,8 +82,8 @@ class StudentAttendanceController extends Controller
 
         $roster = $students->map(function ($student) use ($attendances, &$presentCount, &$absentCount, &$lateCount, &$leaveCount) {
             $att = $attendances->get($student->id);
-            // Default to 'present' if not marked yet
-            $status = $att ? $att->status : 'present';
+            // Students remain absent until a machine punch maps them.
+            $status = $att ? $att->status : 'absent';
             $remarks = $att ? $att->remarks : '';
 
             if ($status === 'present') $presentCount++;
@@ -124,12 +124,18 @@ class StudentAttendanceController extends Controller
             ->groupBy('section')
             ->pluck('total', 'section');
 
-        // Bulk aggregate attendance stats per section (1 query)
-        $sectionAttStats = StudentAttendance::where('date', $date)
-            ->where('session', $session)
-            ->where('class', $class)
-            ->selectRaw('section, count(*) as total_att, sum(case when status = "absent" then 1 else 0 end) as absent_count, min(teacher_name) as teacher_name, max(marked_at) as marked_at')
-            ->groupBy('section')
+        // Count explicit statuses for current roster members, including unsaved absences.
+        $sectionAttStats = Student::leftJoin('student_attendances as attendance', function ($join) use ($date, $session, $class) {
+                $join->on('attendance.student_id', '=', 'students.id')
+                    ->on('attendance.section', '=', 'students.section')
+                    ->where('attendance.date', '=', $date)
+                    ->where('attendance.session', '=', $session)
+                    ->where('attendance.class', '=', $class);
+            })
+            ->where('students.session', $session)
+            ->where('students.class', $class)
+            ->selectRaw('students.section, count(attendance.id) as total_att, sum(case when attendance.status = "present" then 1 else 0 end) as present_count, sum(case when coalesce(attendance.status, "absent") = "absent" then 1 else 0 end) as absent_count, sum(case when attendance.status = "late" then 1 else 0 end) as late_count, sum(case when attendance.status = "leave" then 1 else 0 end) as leave_count, min(attendance.teacher_name) as teacher_name, max(attendance.marked_at) as marked_at')
+            ->groupBy('students.section')
             ->get()
             ->keyBy('section');
 
@@ -138,8 +144,8 @@ class StudentAttendanceController extends Controller
             $total = (int) ($sectionStudentCounts[$secName] ?? 0);
             $att = $sectionAttStats->get($secName);
             $isSecMarked = $att && $att->total_att > 0;
-            $secAbsent = $att ? (int) $att->absent_count : 0;
-            $secPresent = $isSecMarked ? ((int) $att->total_att - $secAbsent) : $total;
+            $secAbsent = $att ? (int) $att->absent_count : $total;
+            $secPresent = $att ? (int) $att->present_count : 0;
             $markedAtTime = $att && $att->marked_at ? Carbon::parse($att->marked_at)->format('h:i A') : null;
 
             $classProgress[] = [
@@ -148,6 +154,8 @@ class StudentAttendanceController extends Controller
                 'is_marked'    => $isSecMarked,
                 'present'      => $secPresent,
                 'absent'       => $secAbsent,
+                'late'         => $att ? (int) $att->late_count : 0,
+                'leave'        => $att ? (int) $att->leave_count : 0,
                 'teacher_name' => $att?->teacher_name,
                 'marked_at'    => $markedAtTime,
             ];
@@ -200,6 +208,33 @@ class StudentAttendanceController extends Controller
         $userId = $request->user()?->id;
         $now = Carbon::now();
 
+        $studentIds = collect($request->attendances)->pluck('student_id')->unique()->values();
+        $rosterIds = Student::where('session', $session)
+            ->where('class', $class)
+            ->where('section', $section)
+            ->whereIn('id', $studentIds)
+            ->pluck('id');
+
+        if ($rosterIds->count() !== $studentIds->count()) {
+            return response()->json(['message' => 'Students must belong to the selected class, section and session.'], 422);
+        }
+
+        $firstPunches = DB::table('bio_device_users as enrollment')
+            ->join('bio_punches as punch', function ($join) {
+                $join->on('punch.machine_sn', '=', 'enrollment.machine_sn')
+                    ->on('punch.bio_user_id', '=', 'enrollment.device_user_id');
+            })
+            ->whereIn('enrollment.student_id', $rosterIds)
+            ->whereDate('punch.punch_time', $date)
+            ->selectRaw('enrollment.student_id, min(punch.punch_time) as first_punch')
+            ->groupBy('enrollment.student_id')
+            ->pluck('first_punch', 'student_id');
+        $lateCutoff = Carbon::parse(config('attendance.late_cutoff', '08:00'))->format('H:i:s');
+        $existingAttendances = StudentAttendance::where('date', $date)
+            ->whereIn('student_id', $rosterIds)
+            ->get(['student_id', 'marked_by', 'marked_at'])
+            ->keyBy('student_id');
+
         $rows = [];
         $present = 0;
         $absent = 0;
@@ -208,6 +243,14 @@ class StudentAttendanceController extends Controller
 
         foreach ($request->attendances as $item) {
             $status = $item['status'];
+            $existingAttendance = $existingAttendances->get($item['student_id']);
+            $firstPunch = $firstPunches->get($item['student_id']);
+            if ($firstPunch) {
+                $status = Carbon::parse($firstPunch)->format('H:i:s') > $lateCutoff ? 'late' : 'present';
+            } elseif (in_array($status, ['present', 'late'], true)) {
+                return response()->json(['message' => 'Present or late attendance requires a linked machine punch for the selected date.'], 422);
+            }
+
             if ($status === 'present') $present++;
             elseif ($status === 'absent') $absent++;
             elseif ($status === 'late') $late++;
@@ -223,8 +266,8 @@ class StudentAttendanceController extends Controller
                 'teacher_name' => $teacherName ?: null,
                 'teacher_id'   => $teacherId ?: null,
                 'remarks'      => $item['remarks'] ?? null,
-                'marked_by'    => $userId,
-                'marked_at'    => $now,
+                'marked_by'    => $existingAttendance ? $existingAttendance->marked_by : $userId,
+                'marked_at'    => $existingAttendance ? $existingAttendance->marked_at : $now,
                 'created_at'   => $now,
                 'updated_at'   => $now,
             ];
@@ -263,7 +306,7 @@ class StudentAttendanceController extends Controller
     {
         $this->authorizeAccess($request);
 
-        $date = $request->input('date', Carbon::today()->format('Y-m-d'));
+        $date = $request->input('date', Carbon::today('Asia/Karachi')->format('Y-m-d'));
         $session = $request->input('session', '2026-2027') ?: '2026-2027';
         $class = $request->input('class', 'ECE/Nur');
         $section = $request->input('section', 'A') ?: 'A';
@@ -282,10 +325,13 @@ class StudentAttendanceController extends Controller
             ->keyBy('student_id');
 
         $counts = ['present' => 0, 'late' => 0, 'absent' => 0, 'leave' => 0];
-        foreach ($attendances as $a) {
-            if (isset($counts[$a->status])) $counts[$a->status]++;
+        $unmarked = 0;
+        foreach ($students as $student) {
+            $att = $attendances->get($student->id);
+            $status = $att->status ?? 'absent';
+            if (isset($counts[$status])) $counts[$status]++;
+            if (!$att) $unmarked++;
         }
-        $unmarked = $students->count() - count($attendances);
 
         $teacherNote = $attendances->first()?->teacher_name;
         $logoB64 = $this->fileDataUri(resource_path('assets/nsse_logo.png'));
@@ -298,13 +344,13 @@ class StudentAttendanceController extends Controller
                 'absent'  => ['FDE8E8', 'B91C1C', 'Absent'],
                 'leave'   => ['E8F0FE', '1D4ED8', 'Leave'],
             ];
-            [$bg, $fg, $label] = $map[$status] ?: ['F3F4F6', '6B7280', '—'];
+            [$bg, $fg, $label] = $map[$status] ?? ['F3F4F6', '6B7280', '—'];
             return '<span style="display:inline-block;padding:1.5mm 3.5mm;border-radius:3mm;background-color:#' . $bg . ';color:#' . $fg . ';font-weight:bold;font-size:8.5pt;">' . $label . '</span>';
         };
 
         $photoCell = function ($student) {
             if ($student->photo_path) {
-                $uri = $this->fileDataUri(storage_path('app/public/' . $student->photo_path));
+                $uri = $this->fileDataUri(storage_path('app/public/' . $student->photo_path), 80, 96, true);
                 if ($uri) {
                     return '<img src="' . $uri . '" width="34" height="40" style="object-fit:cover;border:1px solid #CFE3D6;" />';
                 }
@@ -317,7 +363,7 @@ class StudentAttendanceController extends Controller
         foreach ($students as $student) {
             $n++;
             $att = $attendances->get($student->id);
-            $status = $att->status ?? 'present';
+            $status = $att->status ?? 'absent';
             $remarks = $att?->remarks ?: '';
             $markedAt = $att?->marked_at ? Carbon::parse($att->marked_at)->format('H:i') : '';
             $rows .= '<tr>
@@ -334,46 +380,69 @@ class StudentAttendanceController extends Controller
         $dateHuman = Carbon::parse($date)->format('l, d F Y');
         $generatedAt = Carbon::now()->format('d M Y, g:ia');
         $teacherNoteDisplay = $teacherNote ?: '—';
+        $studentCount = $students->count();
 
         $html = <<<HTML
 <style>
-    body { font-family: helvetica; }
+    body { font-family: helvetica; color:#24332A; }
     table.roster { width:100%; border-collapse:collapse; }
-    table.roster th { background-color:#14532D; color:#FFFFFF; font-size:8pt; text-transform:uppercase;
-        padding:3mm 2mm; letter-spacing:0.4pt; }
-    table.roster td { border:0.7px solid #CFE3D6; padding:2mm 2.5mm; vertical-align:middle; }
-    tr.z0 { background-color:#FFFFFF; }
-    tr.z1 { background-color:#F4FAF6; }
+    table.roster thead { display:table-header-group; }
+    table.roster th { background-color:#164E35; color:#FFFFFF; font-size:7.5pt; text-transform:uppercase;
+        padding:3mm 2mm; letter-spacing:0.55pt; border-bottom:2px solid #A8D5B5; }
+    table.roster td { border-bottom:0.7px solid #DDEBE1; padding:2.2mm 2.5mm; vertical-align:middle; }
+    table.roster tr:nth-child(even) td { background-color:#F7FBF8; }
+    table.roster tr { page-break-inside:avoid; }
+    .metric { border:0.7px solid #D8E9DD; background-color:#FFFFFF; padding:2.5mm 3mm; }
+    .metric-label { color:#718078; font-size:7pt; text-transform:uppercase; letter-spacing:0.45pt; }
+    .metric-value { font-size:16pt; font-weight:bold; line-height:1.1; }
 </style>
 
-<table style="width:100%; background-color:#14532D; color:#FFFFFF; border-radius:5mm 5mm 0 0; margin-bottom:0;">
+<table style="width:100%; background-color:#164E35; color:#FFFFFF; border-radius:4mm 4mm 0 0; margin-bottom:0;">
 <tr>
-    <td style="width:22mm; padding:4mm 3mm 4mm 4mm;">
-        <img src="{$logoB64}" width="58" height="58" />
+    <td style="width:22mm; padding:4.5mm 3mm 4.5mm 4mm;">
+        <img src="{$logoB64}" width="54" height="54" />
     </td>
-    <td style="padding:4mm 3mm;">
-        <div style="font-size:7.5pt; letter-spacing:1.6pt; color:#BFE3CB; font-weight:bold;">NAWAZ SHARIF SCHOOL OF EMINENCE</div>
-        <div style="font-size:16.5pt; font-weight:bold; margin-top:1mm;">Daily Attendance Report</div>
-        <div style="font-size:9.5pt; color:#D9EFDF; margin-top:0.5mm;">{$dateHuman}</div>
+    <td style="padding:4.5mm 3mm;">
+        <div style="font-size:7pt; letter-spacing:1.55pt; color:#BFE3CB; font-weight:bold;">NAWAZ SHARIF SCHOOL OF EMINENCE</div>
+        <div style="font-size:17pt; font-weight:bold; margin-top:1.2mm;">Daily Attendance</div>
+        <div style="font-size:9pt; color:#D9EFDF; margin-top:1mm;">Class register · {$dateHuman}</div>
     </td>
-    <td style="padding:4mm; text-align:right;">
-        <div style="font-size:8pt; color:#BFE3CB; letter-spacing:1pt; font-weight:bold;">{$class} · SECTION {$section}</div>
-        <div style="font-size:8pt; color:#BFE3CB;">Session {$session}</div>
+    <td style="padding:4.5mm; text-align:right;">
+        <div style="font-size:8pt; color:#FFFFFF; letter-spacing:0.7pt; font-weight:bold;">{$class} · SECTION {$section}</div>
+        <div style="font-size:8pt; color:#BFE3CB; margin-top:1mm;">SESSION {$session}</div>
     </td>
 </tr>
 </table>
 
-<table style="width:100%; border:0.7px solid #CFE3D6; border-collapse:collapse; background-color:#F4FAF6; margin-bottom:4mm;">
+<table style="width:100%; border:0.7px solid #D8E9DD; border-collapse:separate; border-spacing:2mm; background-color:#F1F8F3; margin-bottom:3mm;">
 <tr>
-    <td style="padding:3mm 4mm; font-size:9pt;">
-        <b style="color:#14532D;">{$counts['present']}</b> Present &nbsp;·&nbsp;
-        <b style="color:#8A6D1A;">{$counts['late']}</b> Late &nbsp;·&nbsp;
-        <b style="color:#B91C1C;">{$counts['absent']}</b> Absent &nbsp;·&nbsp;
-        <b style="color:#1D4ED8;">{$counts['leave']}</b> Leave &nbsp;·&nbsp;
-        <i style="color:#6B7280;">{$unmarked} not in roster</i>
+    <td class="metric" style="width:25%;">
+        <div class="metric-label">Present</div>
+        <div class="metric-value" style="color:#167044;">{$counts['present']}</div>
     </td>
-    <td style="padding:3mm 4mm; text-align:right; font-size:8.5pt; color:#6B7280;">
-        Marked by: <b style="color:#374151;">{$teacherNoteDisplay}</b>
+    <td class="metric" style="width:25%;">
+        <div class="metric-label">Late</div>
+        <div class="metric-value" style="color:#A06A09;">{$counts['late']}</div>
+    </td>
+    <td class="metric" style="width:25%;">
+        <div class="metric-label">Absent</div>
+        <div class="metric-value" style="color:#B42318;">{$counts['absent']}</div>
+    </td>
+    <td class="metric" style="width:25%;">
+        <div class="metric-label">Leave</div>
+        <div class="metric-value" style="color:#2459A6;">{$counts['leave']}</div>
+    </td>
+</tr>
+</table>
+
+<table style="width:100%; border-collapse:collapse; margin-bottom:4mm;">
+<tr>
+    <td style="padding:2.5mm 3mm; background-color:#F7FBF8; border-left:2px solid #5CA875; font-size:8.5pt; color:#66756C;">
+        <span style="color:#164E35; font-weight:bold;">{$studentCount} students</span>
+        &nbsp;·&nbsp; {$unmarked} without saved attendance
+    </td>
+    <td style="padding:2.5mm 3mm; background-color:#F7FBF8; text-align:right; font-size:8.5pt; color:#66756C;">
+        Marked by: <b style="color:#24332A;">{$teacherNoteDisplay}</b>
     </td>
 </tr>
 </table>
@@ -408,8 +477,9 @@ HTML;
             'tempDir' => sys_get_temp_dir(),
         ]);
 
-        if (is_file($framePath)) {
-            $mpdf->SetWatermarkImage($framePath, 1.0, [210, 297]);
+        $frameData = $this->fileDataUri($framePath, 1240, 1754, true);
+        if ($frameData) {
+            $mpdf->SetWatermarkImage($frameData, 1.0, [210, 297]);
             $mpdf->showWatermarkImage = true;
         }
 
@@ -422,19 +492,51 @@ HTML;
             ->header('Content-Disposition', 'attachment; filename="' . $fileName . '"');
     }
 
-    private function fileDataUri(string $path): ?string
+    private function fileDataUri(string $path, int $maxWidth = 144, int $maxHeight = 144, bool $jpeg = false): ?string
     {
         if (!is_file($path)) return null;
         $content = @file_get_contents($path);
         if ($content === false) return null;
         $mime = @mime_content_type($path) ?: 'image/png';
+
+        // Embed report-sized images instead of full-resolution originals.
+        // Keep the original file untouched and preserve PNG logo transparency.
+        if (function_exists('imagecreatefromstring')) {
+            $source = @imagecreatefromstring($content);
+            if ($source !== false) {
+                $width = imagesx($source);
+                $height = imagesy($source);
+                $scale = min(1, $maxWidth / $width, $maxHeight / $height);
+                $targetWidth = max(1, (int) round($width * $scale));
+                $targetHeight = max(1, (int) round($height * $scale));
+                $target = imagecreatetruecolor($targetWidth, $targetHeight);
+                if ($jpeg) {
+                    imagefill($target, 0, 0, imagecolorallocate($target, 255, 255, 255));
+                } else {
+                    imagealphablending($target, false);
+                    imagesavealpha($target, true);
+                    imagefill($target, 0, 0, imagecolorallocatealpha($target, 0, 0, 0, 127));
+                }
+                imagecopyresampled($target, $source, 0, 0, 0, 0, $targetWidth, $targetHeight, $width, $height);
+                ob_start();
+                $encoded = $jpeg ? imagejpeg($target, null, 80) : imagepng($target, null, 9);
+                $optimized = ob_get_clean();
+                imagedestroy($target);
+                imagedestroy($source);
+                if ($encoded && $optimized !== false) {
+                    $content = $optimized;
+                    $mime = $jpeg ? 'image/jpeg' : 'image/png';
+                }
+            }
+        }
+
         return 'data:' . $mime . ';base64,' . base64_encode($content);
     }
 
     public function dailySummary(Request $request)
     {        $this->authorizeAccess($request);
 
-        $date = $request->input('date', Carbon::today()->format('Y-m-d'));
+        $date = $request->input('date', Carbon::today('Asia/Karachi')->format('Y-m-d'));
         $session = $request->input('session', '2026-2027') ?: '2026-2027';
 
         $totalEnrolled = Student::where('session', $session)->count();
@@ -825,13 +927,6 @@ HTML;
                 'remarks'  => $att->remarks,
             ];
 
-            if (isset($dailyTotals[$d])) {
-                $st = $att->status;
-                if (isset($dailyTotals[$d][$st])) {
-                    $dailyTotals[$d][$st]++;
-                    $dailyTotals[$d]['total']++;
-                }
-            }
         }
 
         $totalPresentOverall = 0;
@@ -841,7 +936,7 @@ HTML;
         $totalStudents = $students->count();
 
         // Build student rows with day-by-day matrix
-        $studentRows = $students->map(function ($student) use ($days, $attendanceMap, &$totalPresentOverall, &$totalAbsentOverall, &$totalLateOverall, &$totalLeaveOverall) {
+        $studentRows = $students->map(function ($student) use ($days, $attendanceMap, &$dailyTotals, &$totalPresentOverall, &$totalAbsentOverall, &$totalLateOverall, &$totalLeaveOverall) {
             $studentAttMap = $attendanceMap[$student->id] ?? [];
             $records = [];
             $pCount = 0;
@@ -883,12 +978,21 @@ HTML;
                             'remarks' => null,
                         ];
                     } else {
+                        $aCount++;
+                        $totalAbsentOverall++;
+                        $markedDays++;
                         $records[$dateKey] = [
-                            'status'  => 'unmarked',
-                            'code'    => '-',
+                            'status'  => 'absent',
+                            'code'    => 'A',
                             'remarks' => null,
                         ];
                     }
+                }
+
+                $status = $records[$dateKey]['status'];
+                if (in_array($status, ['present', 'absent', 'late', 'leave'], true)) {
+                    $dailyTotals[$dateKey][$status]++;
+                    $dailyTotals[$dateKey]['total']++;
                 }
             }
 
